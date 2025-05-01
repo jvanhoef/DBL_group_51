@@ -32,6 +32,6 @@ if json_files:
                 print(f"Error decoding JSON: {e}")
     
     # Print the loaded object (optional)
-    print(json.dumps(data_objects[1], ensure_ascii=False, indent=4))
+    print(json.dumps(data_objects[2], ensure_ascii=False, indent=4))
 else:
     print("No JSON files found in the directory.")
