@@ -1,6 +1,8 @@
 import json
+import os
 
-file_path = r"C:\Users\User\Documents\DBL\data\airlines-1558527599826.json"
+script_directory = os.path.dirname(__file__)
+file_path = os.path.join(script_directory, 'data', 'airlines-1558527599826.json')
 
 airline_ids = {
     56377143, 106062176, 18332190, 22536055, 124476322, 26223583,
