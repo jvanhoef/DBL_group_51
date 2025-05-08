@@ -1,45 +1,36 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Data for raw and clean conversations
-airlines = [
-    "easyJet", "BritishAirways", "AmericanAir", "Qantas", "RyanAir",
-    "VirginAtlantic", "KLM", "SingaporeAir", "Lufthansa", "EtihadAirways", "AirFrance"
+# Data
+categories = [
+    "Unique Tweets",
+    "Data Size (GB)",
+    "Mentions of Airline",
+    "Conversations"
 ]
 
-raw_data = [34497, 57034, 94750, 8411, 12520, 14218, 20608, 7468, 9670, 958, 5236]
-clean_data = [34495, 57034, 94750, 8411, 12520, 14216, 20607, 7468, 9670, 958, 5236]
+before_cleaning = [6094135, 36.048, 812954, 94750]
+after_cleaning = [5863237, 28.985, 812737, 94750]
 
-# Bar chart settings
-x = np.arange(len(airlines))  # X-axis positions
-width = 0.3  # Reduce the width of the bars to create more space
+# Create subplots
+fig, axes = plt.subplots(nrows=1, ncols=len(categories), figsize=(20, 5))
 
-# Create the bar chart
-fig, ax = plt.subplots(figsize=(12, 6))
-bars1 = ax.bar(x - width, raw_data, width, label='Raw Data', color='skyblue')  # Shift left
-bars2 = ax.bar(x + width, clean_data, width, label='Clean Data', color='orange')  # Shift right
+for i, (ax, category) in enumerate(zip(axes, categories)):
+    bars = ax.bar(["Before", "After"], 
+                  [before_cleaning[i], after_cleaning[i]], 
+                  color=['skyblue', 'orange'])
 
-# Add labels, title, and legend
-ax.set_xlabel('Airlines')
-ax.set_ylabel('Number of Conversations')
-ax.set_title('Conversations per Airline: Raw vs Clean Data')
-ax.set_xticks(x)
-ax.set_xticklabels(airlines, rotation=45, ha='right')
-ax.legend()
-
-# Add values on top of the bars
-def add_values(bars):
+    # Add labels, title, and values on top of the bars
+    ax.set_title(f'{category}')
+    ax.set_ylabel('Value')
     for bar in bars:
         height = bar.get_height()
-        ax.annotate(f'{height}',
+        ax.annotate(f'{height:,.0f}' if isinstance(height, int) else f'{height:.3f}',
                     xy=(bar.get_x() + bar.get_width() / 2, height),
                     xytext=(0, 3),  # Offset text by 3 points
                     textcoords="offset points",
                     ha='center', va='bottom')
 
-add_values(bars1)
-add_values(bars2)
-
-# Show the plot
+# Adjust layout
 plt.tight_layout()
 plt.show()
