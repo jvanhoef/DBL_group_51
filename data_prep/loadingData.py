@@ -100,6 +100,30 @@ def load_tweets_batch(cursor, tweets):
                     source.possibly_sensitive, source.language);
     """, tweets)
     
+def load_hashtags_batch(cursor, hashtags):
+    """
+    Insert hashtag data in the database in batches without checking for duplicates.
+    """
+    if not hashtags:
+        return
+
+    cursor.executemany("""
+        INSERT INTO dbo.hashtag (text, indices, tweet_id)
+        VALUES (?, ?, ?);
+    """, hashtags)
+    
+def load_mentions_batch(cursor, mentions):
+    """
+    Insert or update mention data in the database in batches.
+    """
+    if not mentions:
+        return
+
+    cursor.executemany("""
+            INSERT INTO dbo.mention (indices, tweet_id)
+            VALUES (source.id, source.indices, source.tweet_id);
+    """, mentions)
+    
 # Get a list of all files in the directory
 files = os.listdir(data_directory)
 
@@ -229,6 +253,42 @@ for index, json_file in enumerate(json_files, start=1):
     connection.commit()
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Tweets from {json_file} inserted successfully. ({index}/{total_files})")
 print("All tweets inserted successfully.")
+
+for index, json_file in enumerate(json_files, start=1):
+    json_path = os.path.join(data_directory, json_file)
+    hashtags = []
+    mentions = []
+    with open(json_path, 'r', encoding='utf8') as file:
+        for line in file:
+            try:
+                data = json.loads(line)
+                tweet_id_str = data.get('id_str')
+                if tweet_id_str:
+                    try:
+                        tweet_id = int(tweet_id_str)  # Convert id_str to BIGINT
+                    except ValueError as e:
+                        print(f"Error converting id_str to BIGINT in file {json_file}: {e}")
+                        
+                        continue  # Skip this tweet if conversion fails
+                    
+                hashtags_data = data.get('entities', {}).get('hashtags', [])
+                for hashtag in hashtags_data:
+                    hashtags.append((
+                        hashtag.get('text', None),
+                        hashtag.get('indices', None),
+                        tweet_id
+                    ))
+                    
+                mentions_data = data.get('entities', {}).get('user_mentions', [])
+                    
+            except json.JSONDecodeError as e:
+                print(f"Error decoding JSON in file {json_file}: {e}")
+    # Insert all tweets from the current file
+    load_hashtags_batch(cursor, hashtags)
+    connection.commit()
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Tweets from {json_file} inserted successfully. ({index}/{total_files})")
+print("All tweets inserted successfully.")
+                    
 
 # Close the connection
 cursor.close()
