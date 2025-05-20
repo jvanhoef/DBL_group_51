@@ -87,7 +87,6 @@ def fetch_airline_reply_tweets(airline_ids):
     """
     cursor.execute(query, tuple(airline_ids))
     columns = [column[0] for column in cursor.description]
-    print(cursor.fetchone())
     tweets = [dict(zip(columns, row)) for row in cursor.fetchall()]
     conn.close()
     return tweets
