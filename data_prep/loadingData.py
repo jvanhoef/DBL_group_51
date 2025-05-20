@@ -24,7 +24,7 @@ def truncate_tables(cursor):
     """
     Delete all rows from the specified tables while respecting foreign key constraints.
     """
-    tables = ['conversations', 'hashtag', 'mention', 'options', 'poll']
+    tables = ['mention', 'hashtag', 'tweet']
     for table in tables:
         try:
             cursor.execute(f"DELETE FROM dbo.[{table}]")
@@ -70,9 +70,9 @@ def load_tweets_batch(cursor, tweets):
     cursor.executemany("""
         MERGE dbo.tweet AS target
         USING (SELECT ? AS id, ? AS text, ? AS created_at, ? AS in_reply_to_status_id, ? AS in_reply_to_user, 
-                      ? AS in_reply_to_screen_name, ? AS user_id, ? AS quoted_status_id, ? AS retweeted_id, 
+                      ? AS user_id, ? AS quoted_status_id, ? AS retweeted_id, 
                       ? AS quote_count, ? AS reply_count, ? AS retweet_count, ? AS favorite_count, 
-                      ? AS possibly_sensitive, ? AS language) AS source
+                      ? AS possibly_sensitive, ? AS language, ? AS sentiment) AS source
         ON target.id = source.id
         WHEN MATCHED THEN
             UPDATE SET 
@@ -80,7 +80,6 @@ def load_tweets_batch(cursor, tweets):
                 created_at = source.created_at,
                 in_reply_to_status_id = source.in_reply_to_status_id,
                 in_reply_to_user = source.in_reply_to_user,
-                in_reply_to_screen_name = source.in_reply_to_screen_name,
                 user_id = source.user_id,
                 quoted_status_id = source.quoted_status_id,
                 retweeted_id = source.retweeted_id,
@@ -89,15 +88,15 @@ def load_tweets_batch(cursor, tweets):
                 retweet_count = source.retweet_count,
                 favorite_count = source.favorite_count,
                 possibly_sensitive = source.possibly_sensitive,
-                language = source.language
+                language = source.language,
+                sentiment = source.sentiment
         WHEN NOT MATCHED THEN
-            INSERT (id, text, created_at, in_reply_to_status_id, in_reply_to_user, in_reply_to_screen_name, 
+            INSERT (id, text, created_at, in_reply_to_status_id, in_reply_to_user, 
                     user_id, quoted_status_id, retweeted_id, quote_count, reply_count, retweet_count, 
-                    favorite_count, possibly_sensitive, language)
+                    favorite_count, possibly_sensitive, language, sentiment)
             VALUES (source.id, source.text, source.created_at, source.in_reply_to_status_id, source.in_reply_to_user, 
-                    source.in_reply_to_screen_name, source.user_id, source.quoted_status_id, source.retweeted_id, 
-                    source.quote_count, source.reply_count, source.retweet_count, source.favorite_count, 
-                    source.possibly_sensitive, source.language);
+                    source.user_id, source.quoted_status_id, source.retweeted_id, source.quote_count, source.reply_count, 
+                    source.retweet_count, source.favorite_count, source.possibly_sensitive, source.language, source.sentiment);
     """, tweets)
     
 def load_hashtags_batch(cursor, hashtags):
@@ -133,7 +132,7 @@ json_files = [file for file in files if file.endswith('.json')]
 # Check if there are any JSON files
 if json_files:
     # Truncate all tables before inserting new data
-    truncate_tables(cursor)
+    # truncate_tables(cursor)
 
     # First iteration: Add all users
     total_files = len(json_files)
@@ -196,63 +195,84 @@ else:
 
 # print("All users inserted successfully.")
 # Second iteration: Add all tweets
-# for index, json_file in enumerate(json_files, start=1):
-#     json_path = os.path.join(data_directory, json_file)
-#     tweets = []
-#     with open(json_path, 'r', encoding='utf8') as file:
-#         for line in file:
-#             try:
-#                 data = json.loads(line)
-#                 tweet_id_str = data.get('id_str')
-#                 if tweet_id_str:
-#                     try:
-#                         tweet_id = int(tweet_id_str)  # Convert id_str to BIGINT
-#                     except ValueError as e:
-#                         print(f"Error converting id_str to BIGINT in file {json_file}: {e}")
-                        
-#                         continue  # Skip this tweet if conversion fails
+for index, json_file in enumerate(json_files, start=1):
+    json_path = os.path.join(data_directory, json_file)
+    last_processed_line = processed_lines.get(json_file, 0)
+    tweets = []
+    with open(json_path, 'r', encoding='utf8') as file:
+        for line_number, line in enumerate(file, start=1):
+            if line_number <= last_processed_line:
+                continue  # Skip already processed lines
+            try:
+                data = json.loads(line)
+                tweet_id_str = data.get('id_str')
+                if tweet_id_str:
+                    try:
+                        tweet_id = int(tweet_id_str)  # Convert id_str to BIGINT
+                    except ValueError as e:
+                        print(f"Error converting id_str to BIGINT in file {json_file}: {e}")
+                        continue  # Skip this tweet if conversion fails
                     
-#                     created_at_int = data.get('created_at')
-#                     if isinstance(created_at_int, int):  # Ensure it's a valid integer
-#                         created_at = datetime.fromtimestamp(created_at_int / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-#                     else:
-#                         created_at = None  # Handle missing or invalid created_at
-                        
-#                     try:
-#                         user = data.get('user', {})
-#                         user_id = user['id_str']  # Convert id_str to BIGINT
-#                     except ValueError as e:
-#                         print(f"Error converting id_str to BIGINT in file {json_file}: {e}")
-#                         continue  # Skip this user if conversion fails
- 
-#                     # Safely handle retweeted_status
-#                     retweeted_status = data.get('retweeted_status', {})
-#                     retweeted_id = retweeted_status.get('id') if retweeted_status else None
- 
-#                     tweets.append((
-#                         tweet_id,
-#                         data.get('text'),
-#                         created_at,
-#                         data.get('in_reply_to_status_id'),
-#                         data.get('in_reply_to_user_id'),
-#                         data.get('in_reply_to_screen_name'),
-#                         user_id,
-#                         data.get('quoted_status_id'),
-#                         retweeted_id,
-#                         data.get('quote_count', 0),
-#                         data.get('reply_count', 0),
-#                         data.get('retweet_count', 0),
-#                         data.get('favorite_count', 0),
-#                         data.get('possibly_sensitive', False),
-#                         data.get('lang')
-#                     ))
-#             except json.JSONDecodeError as e:
-#                 print(f"Error decoding JSON in file {json_file}: {e}")
-#     # Insert all tweets from the current file
-#     load_tweets_batch(cursor, tweets)
-#     connection.commit()
-#     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Tweets from {json_file} inserted successfully. ({index}/{total_files})")
-# print("All tweets inserted successfully.")
+                  # Convert all relevant fields to BIGINT or INT as needed
+                def safe_int(val):
+                    try:
+                        return int(val)
+                    except (TypeError, ValueError):
+                        return None
+                    
+                in_reply_to_status_id = safe_int(data.get('in_reply_to_status_id_str'))
+                in_reply_to_user = safe_int(data.get('in_reply_to_user_id_str'))
+                user = data.get('user', {})
+                user_id = safe_int(user.get('id_str'))
+                retweeted_status = data.get('retweeted_status', {})
+                retweeted_id = safe_int(retweeted_status.get('id_str')) if retweeted_status else None
+                    
+                created_at_int = data.get('created_at')
+                if isinstance(created_at_int, int):  # Ensure it's a valid integer
+                    created_at = datetime.fromtimestamp(created_at_int / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    created_at = None  # Handle missing or invalid created_at
+
+                try:
+                    user = data.get('user', {})
+                    user_id = user['id_str']  # Convert id_str to BIGINT
+                except ValueError as e:
+                    print(f"Error converting id_str to BIGINT in file {json_file}: {e}")
+                    continue  # Skip this user if conversion fails
+
+                # Safely handle retweeted_status
+                retweeted_status = data.get('retweeted_status', {})
+                retweeted_id = retweeted_status.get('id') if retweeted_status else None
+
+                tweets.append((
+                    tweet_id,
+                    data.get('text'),
+                    created_at,
+                    in_reply_to_status_id,
+                    in_reply_to_user,
+                    user_id,
+                    data.get('quoted_status_id'),
+                    retweeted_id,
+                    data.get('quote_count', 0),
+                    data.get('reply_count', 0),
+                    data.get('retweet_count', 0),
+                    data.get('favorite_count', 0),
+                    data.get('possibly_sensitive', False),
+                    data.get('lang'),
+                    0
+                ))
+            except json.JSONDecodeError as e:
+                print(f"Error decoding JSON in file {json_file}: {e}")
+        # Insert all tweets from the current file
+        load_tweets_batch(cursor, tweets)
+        connection.commit()
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Tweets from {json_file} inserted successfully. ({index}/{total_files})")
+        # Log the last processed line for this file
+        processed_lines[json_file] = line_number
+        with open(processed_lines_path, 'w') as log_file:
+            for file_name, last_line in processed_lines.items():
+                log_file.write(f"{file_name}:{last_line}\n")
+print("All tweets inserted successfully.")
 
 for index, json_file in enumerate(json_files, start=1):
     json_path = os.path.join(data_directory, json_file)
@@ -294,7 +314,7 @@ for index, json_file in enumerate(json_files, start=1):
     load_mentions_batch(cursor, mentions)
     connection.commit()
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] entities from {json_file} inserted successfully. ({index}/{total_files})")
-print("All tweets inserted successfully.")
+print("All tweet entities inserted successfully.")
                     
 
 # Close the connection

@@ -74,12 +74,41 @@ def fetch_user_by_id(user_id):
     conn.close()
     return user
 
-def fetch_airline_tweets(airline_ids):
+def fetch_airline_reply_tweets(airline_ids):
+    """
+    Fetch tweets where the user is an airline and it's a reply to someone.
+    """
     conn = get_connection()
     cursor = conn.cursor()
     placeholders = ','.join(['?'] * len(airline_ids))
-    cursor.execute(f"SELECT * FROM dbo.tweet WHERE user_id IN ({placeholders})", tuple(airline_ids))
+    query = f"""
+        SELECT * FROM dbo.tweet
+        WHERE user_id IN ({placeholders}) AND in_reply_to_status_id IS NOT NULL
+    """
+    cursor.execute(query, tuple(airline_ids))
     columns = [column[0] for column in cursor.description]
+    print(cursor.fetchone())
     tweets = [dict(zip(columns, row)) for row in cursor.fetchall()]
     conn.close()
     return tweets
+
+def fetch_tweet_by_id(tweet_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM dbo.tweet WHERE id = ?", tweet_id)
+    row = cursor.fetchone()
+    columns = [column[0] for column in cursor.description]
+    tweet = dict(zip(columns, row)) if row else None
+    conn.close()
+    return tweet
+
+def fetch_replies_to_tweet(tweet_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM dbo.tweet WHERE in_reply_to_status_id = ?", tweet_id)
+    columns = [column[0] for column in cursor.description]
+    replies = [dict(zip(columns, row)) for row in cursor.fetchall()]
+    conn.close()
+    return replies
+
+fetch_airline_reply_tweets([22536055])
