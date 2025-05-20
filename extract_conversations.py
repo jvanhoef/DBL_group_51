@@ -3,36 +3,53 @@ import json
 from collections import defaultdict
 from tqdm import tqdm
 
-# Path to the directory containing your .json files
-folder_path = r"clean_data"
-output_txt_path = r"conversations_output.txt"
+# Path to JSON files
+folder_path = r"C:\Users\evanb\Downloads\data"
+output_txt_path = r"conversations_output_filtered.txt"
 
-# Airline screen names (must match 'screen_name' of the airline accounts)
+# Airline screen names (can expand as needed)
 airline_users = {
     'AmericanAir': 'AmericanAir',
 }
+airline_usernames_set = set(airline_users.values())
 
-def get_context_from(tweet, tweets_by_id, max_depth=5):
+def get_full_text(tweet):
+    """Extract full text from tweet object."""
+    return (
+        tweet.get('extended_tweet', {}).get('full_text') or
+        tweet.get('full_text') or
+        tweet.get('text', '')
+    ).replace('\n', ' ').strip()
+
+def get_context_from(tweet, tweets_by_id, allowed_user_ids):
+    """Get context (ancestors) of a tweet limited to allowed users."""
     context = []
-    current = tweet
-    depth = 0
-    while current and current.get('in_reply_to_status_id_str') and depth < max_depth:
-        parent_id = current['in_reply_to_status_id_str']
-        parent = tweets_by_id.get(parent_id)
-        if parent:
-            context.insert(0, parent)
-            current = parent
-            depth += 1
-        else:
+    parent_id = tweet.get('in_reply_to_status_id_str')
+    while parent_id and parent_id in tweets_by_id:
+        parent = tweets_by_id[parent_id]
+        if parent.get('user', {}).get('id_str') not in allowed_user_ids:
             break
+        context.insert(0, parent)
+        parent_id = parent.get('in_reply_to_status_id_str')
     return context
 
+def get_replies_for(tweet, replies_to, allowed_user_ids):
+    """Recursively get all replies from allowed users."""
+    replies = []
+    queue = replies_to.get(tweet['id_str'], [])
+    while queue:
+        reply = queue.pop(0)
+        user_id = reply.get('user', {}).get('id_str')
+        if user_id in allowed_user_ids:
+            replies.append(reply)
+            queue.extend(replies_to.get(reply['id_str'], []))
+    return replies
+
 def format_conversation(convo):
-    """Return formatted conversation text showing reply hierarchy."""
-    id_to_tweet = {t['id_str']: t for t in convo if 'id_str' in t}
+    """Format the conversation with proper time, user, and text output."""
+    id_to_tweet = {t['id_str']: t for t in convo}
     id_to_reply = {t['id_str']: t.get('in_reply_to_status_id_str') for t in convo}
 
-    # Build tree structure
     roots = []
     children = defaultdict(list)
     for tweet_id, parent_id in id_to_reply.items():
@@ -44,29 +61,20 @@ def format_conversation(convo):
     def render(tweet_id, depth=0):
         tweet = id_to_tweet[tweet_id]
         user = tweet.get('user', {}).get('screen_name', 'UnknownUser')
-        text = tweet.get('text', '').replace('\n', ' ')
-        timestamp = tweet.get('created_at', 'UnknownTime')
-        reply_to = id_to_reply.get(tweet_id)
-        prefix = "↳ " * depth
-        header = f"{prefix}@{user} (ID: {tweet_id}, Time: {timestamp})"
-        if reply_to and reply_to in id_to_tweet:
-            header += f" (in reply to @{id_to_tweet[reply_to]['user']['screen_name']})"
-        return f"{header}:\n{prefix}{text}\n\n" + ''.join(
+        text = get_full_text(tweet)
+        timestamp = tweet.get('timestamp_ms') or tweet.get('created_at', 'UnknownTime')
+        return f"(Time: {timestamp}) @{user}: {text}\n" + ''.join(
             render(child_id, depth + 1) for child_id in children.get(tweet_id, [])
         )
 
-    result = ""
-    for root in roots:
-        result += render(root)
-    return result
+    return ''.join(render(root) for root in roots)
 
-conversations_by_airline = defaultdict(int)
-
-# Collect all JSON files
+# Process all JSON files
 json_files = [f for f in os.listdir(folder_path) if f.endswith(".json")]
 
-# Open output file
 with open(output_txt_path, "w", encoding="utf-8") as output_file:
+    conversations_by_airline = defaultdict(int)
+
     for filename in tqdm(json_files, desc="Processing files"):
         file_path = os.path.join(folder_path, filename)
 
@@ -91,30 +99,36 @@ with open(output_txt_path, "w", encoding="utf-8") as output_file:
 
         for tweet in tweets:
             screen_name = tweet.get('user', {}).get('screen_name')
-            if not screen_name:
+            user_id = tweet.get('user', {}).get('id_str')
+            if not screen_name or not user_id:
                 continue
 
-            if screen_name in airline_users.values() and tweet.get('in_reply_to_status_id_str'):
-                parent_id = tweet['in_reply_to_status_id_str']
+            if screen_name in airline_usernames_set and tweet.get('in_reply_to_status_id_str'):
+                parent_id = tweet.get('in_reply_to_status_id_str')
                 parent = tweets_by_id.get(parent_id)
                 if not parent:
                     continue
 
+                original_user_id = parent.get('user', {}).get('id_str')
+                if not original_user_id:
+                    continue
+
+                allowed_user_ids = {user_id, original_user_id}
+
                 convo = []
-                context = get_context_from(parent, tweets_by_id)
+                context = get_context_from(parent, tweets_by_id, allowed_user_ids)
                 convo.extend(context)
                 convo.append(parent)
                 convo.append(tweet)
-                after = replies_to.get(tweet['id_str'], [])[:3]
-                convo.extend(after)
+                replies = get_replies_for(tweet, replies_to, allowed_user_ids)
+                convo.extend(replies)
 
-                participants = {t['user']['screen_name'] for t in convo if 'user' in t}
-                if (participants & set(airline_users.values())) and (participants - set(airline_users.values())):
-                    convo_ids = [t['id_str'] for t in convo if 'id_str' in t]
-                    if not seen_ids.intersection(convo_ids):
-                        seen_ids.update(convo_ids)
+                convo_ids = [t['id_str'] for t in convo]
+                if not seen_ids.intersection(convo_ids):
+                    seen_ids.update(convo_ids)
+                    participants = {t['user']['id_str'] for t in convo}
+                    if participants <= allowed_user_ids:
                         conversations_by_airline[screen_name] += 1
-                        # Write conversation to file
                         output_file.write(f"--- Conversation Start ({screen_name}) ---\n")
                         output_file.write(format_conversation(convo))
                         output_file.write(f"--- Conversation End ---\n\n")
