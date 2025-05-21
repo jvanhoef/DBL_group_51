@@ -1,5 +1,5 @@
 import pyodbc
-import os
+import pandas as pd
 
 def get_connection():
     server = 'S20203142'
@@ -10,104 +10,119 @@ def get_connection():
     )
     return pyodbc.connect(connection_string)
 
-def fetch_tweets_by_airline_ids(airline_ids):
-    """
-    Fetch all tweets where user_id is in airline_ids.
-    """
+#Function to truncate(empty tables
+def delete_tables(tables):
     conn = get_connection()
     cursor = conn.cursor()
-    placeholders = ','.join(['?'] * len(airline_ids))
-    query = f"SELECT * FROM dbo.tweet WHERE user_id IN ({placeholders})"
-    cursor.execute(query, tuple(airline_ids))
-    columns = [column[0] for column in cursor.description]
-    tweets = [dict(zip(columns, row)) for row in cursor.fetchall()]
-    conn.close()
-    return tweets
+    """
+    Delete all rows from the specified tables while respecting foreign key constraints.
+    """
+    for table in tables:
+        try:
+            cursor.execute(f"DELETE FROM dbo.[{table}]")
+            print(f"Table '{table}' cleared successfully.")
+        except pyodbc.Error as e:
+            print(f"Error clearing table '{table}': {e}")
+            
+            #Function to truncate(empty tables
+def truncate_tables(tables):
+    conn = get_connection()
+    cursor = conn.cursor()
+    """
+    Delete all rows from the specified tables while respecting foreign key constraints.
+    """
+    for table in tables:
+        try:
+            cursor.execute(f"Truncate table dbo.[{table}]")
+            print(f"Table '{table}' cleared successfully.")
+        except pyodbc.Error as e:
+            print(f"Error clearing table '{table}': {e}")
 
-def fetch_all_tweets():
-    """
-    Fetch all tweets from the database.
-    """
-    conn = get_connection()
+#getters
+def get_airline_id(conn, airline_screen_name):
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM dbo.tweet")
-    columns = [column[0] for column in cursor.description]
-    tweets = [dict(zip(columns, row)) for row in cursor.fetchall()]
-    conn.close()
-    return tweets
-
-def fetch_tweet_by_id(tweet_id):
-    """
-    Fetch a single tweet by its id.
-    """
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM dbo.tweet WHERE id = ?", tweet_id)
+    cursor.execute("""
+        SELECT id
+        FROM [user]
+        WHERE screen_name = ?
+    """, (airline_screen_name,))
     row = cursor.fetchone()
-    columns = [column[0] for column in cursor.description]
-    tweet = dict(zip(columns, row)) if row else None
-    conn.close()
-    return tweet
+    return row[0] if row else None
 
-def fetch_replies_to_tweet(tweet_id):
-    """
-    Fetch all tweets that are replies to a given tweet_id.
-    """
-    conn = get_connection()
+def get_screen_name_by_id(conn, user_id):
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM dbo.tweet WHERE in_reply_to_status_id = ?", tweet_id)
-    columns = [column[0] for column in cursor.description]
-    replies = [dict(zip(columns, row)) for row in cursor.fetchall()]
-    conn.close()
-    return replies
-
-def fetch_user_by_id(user_id):
-    """
-    Fetch a user by user_id.
-    """
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM dbo.[user] WHERE id = ?", user_id)
+    cursor.execute("""
+        SELECT screen_name FROM [user] WHERE id = ?
+    """, (user_id,))
     row = cursor.fetchone()
-    columns = [column[0] for column in cursor.description]
-    user = dict(zip(columns, row)) if row else None
-    conn.close()
-    return user
+    return row[0] if row else None
 
-def fetch_airline_reply_tweets(airline_ids):
-    """
-    Fetch tweets where the user is an airline and it's a reply to someone.
-    """
-    conn = get_connection()
+def get_relevant_tweets(conn, airline_id):
     cursor = conn.cursor()
-    placeholders = ','.join(['?'] * len(airline_ids))
-    query = f"""
-        SELECT * FROM dbo.tweet
-        WHERE user_id IN ({placeholders}) AND in_reply_to_status_id IS NOT NULL
-    """
-    cursor.execute(query, tuple(airline_ids))
+    cursor.execute("""
+        SELECT *
+        FROM tweet
+        WHERE user_id = ? OR in_reply_to_user = ?
+        ORDER BY created_at
+    """, (airline_id, airline_id))
     columns = [column[0] for column in cursor.description]
-    tweets = [dict(zip(columns, row)) for row in cursor.fetchall()]
-    conn.close()
-    return tweets
+    rows = cursor.fetchall()
+    return pd.DataFrame.from_records(rows, columns=columns)
 
-def fetch_tweet_by_id(tweet_id):
-    conn = get_connection()
+def get_conversation_text_by_id(conn, conversation_id):
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM dbo.tweet WHERE id = ?", tweet_id)
-    row = cursor.fetchone()
-    columns = [column[0] for column in cursor.description]
-    tweet = dict(zip(columns, row)) if row else None
-    conn.close()
-    return tweet
+    cursor.execute("""
+        SELECT 
+            t.created_at,
+            u.screen_name,
+            t.text
+        FROM conversation_tweet ct
+        JOIN tweet t ON ct.tweet_id = t.id
+        JOIN [user] u ON t.user_id = u.id
+        WHERE ct.conversation_id = ?
+        ORDER BY t.created_at
+    """, (conversation_id,))
+    columns = [col[0] for col in cursor.description]
+    rows = cursor.fetchall()
+    return pd.DataFrame.from_records(rows, columns=columns)
 
-def fetch_replies_to_tweet(tweet_id):
-    conn = get_connection()
+#setters
+def insert_conversation(conn, user_id, airline_id, root_tweet_id):
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM dbo.tweet WHERE in_reply_to_status_id = ?", tweet_id)
-    columns = [column[0] for column in cursor.description]
-    replies = [dict(zip(columns, row)) for row in cursor.fetchall()]
-    conn.close()
-    return replies
+    cursor.execute("""
+        INSERT INTO conversation (user_id, airline_id, root_tweet_id)
+        OUTPUT INSERTED.id
+        VALUES (?, ?, ?)
+    """, (user_id, airline_id, root_tweet_id))
+    conv_id = cursor.fetchone()[0]
+    conn.commit()
+    return conv_id
 
-fetch_airline_reply_tweets([22536055])
+def insert_conversation_tweets(conn, conversation_id, tweet_ids):
+    cursor = conn.cursor()
+    for tid in tweet_ids:
+        cursor.execute("""
+            INSERT INTO conversation_tweet (conversation_id, tweet_id)
+            VALUES (?, ?)
+        """, (conversation_id, tid))
+    conn.commit()
+    
+#Debugging
+def print_conversation_nicely(conversation_id, airline_id):
+    conn = get_connection()
+    df = get_conversation_text_by_id(conn, conversation_id)
+    airline_screen_name = get_screen_name_by_id(conn, airline_id)
+
+    if df.empty:
+        print(f"No conversation found for ID {conversation_id}")
+        return
+
+    print(f"--- Conversation Start ({airline_screen_name}) ---")
+
+    for _, row in df.iterrows():
+        timestamp = int(pd.to_datetime(row["created_at"]).timestamp() * 1000)
+        print(f"(Time: {timestamp}) @{row['screen_name']}: {row['text']}")
+
+    print("--- Conversation End ---")
+    
+print_conversation_nicely(145414, 5920532)

@@ -147,6 +147,19 @@ def load_poll_options_batch(cursor, options):
         VALUES (?, ?, ?);
     """, options)
     
+def update_tweet_text_batch(cursor, tweets):
+    """
+    Update tweet data in the database in batches.
+    """
+    if not tweets:
+        return
+
+    cursor.executemany("""
+        UPDATE dbo.tweet
+        SET text = ?
+        WHERE id = ?;
+    """, tweets)
+    
 # Get a list of all files in the directory
 files = os.listdir(data_directory)
 
@@ -156,7 +169,7 @@ json_files = [file for file in files if file.endswith('.json')]
 # Check if there are any JSON files
 if json_files:
     # Truncate all tables before inserting new data
-    truncate_tables(cursor)
+    # truncate_tables(cursor)
 
     # First iteration: Add all users
     total_files = len(json_files)
@@ -173,130 +186,142 @@ else:
     processed_lines = {}
 
 # Process files
-# for index, json_file in enumerate(json_files, start=1):
-#     json_path = os.path.join(data_directory, json_file)
-#     last_processed_line = processed_lines.get(json_file, 0)
-#     users = []
-#     with open(json_path, 'r', encoding='utf8') as file:
-#         for line_number, line in enumerate(file, start=1):
-#             if line_number <= last_processed_line:
-#                 continue  # Skip already processed lines
+for index, json_file in enumerate(json_files, start=1):
+    json_path = os.path.join(data_directory, json_file)
+    last_processed_line = processed_lines.get(json_file, 0)
+    users = []
+    with open(json_path, 'r', encoding='utf8') as file:
+        for line_number, line in enumerate(file, start=1):
+            if line_number <= last_processed_line:
+                continue  # Skip already processed lines
 
-#             try:
-#                 data = json.loads(line)
-#                 user = data.get('user', {})
-#                 if user and 'id_str' in user:
-#                     try:
-#                         user_id = int(user['id_str'])  # Convert id_str to BIGINT
-#                     except ValueError as e:
-#                         print(f"Error converting id_str to BIGINT in file {json_file}: {e}")
-#                         continue  # Skip this user if conversion fails
+            try:
+                data = json.loads(line)
+                user = data.get('user', {})
+                if user and 'id_str' in user:
+                    try:
+                        user_id = int(user['id_str'])  # Convert id_str to BIGINT
+                    except ValueError as e:
+                        print(f"Error converting id_str to BIGINT in file {json_file}: {e}")
+                        continue  # Skip this user if conversion fails
 
-#                     users.append((
-#                         user_id,
-#                         user.get('name', " ") or " ",
-#                         user.get('screen_name', None),
-#                         user.get('description', None),
-#                         user.get('verified', False) or False,
-#                         user.get('followers_count', 0) or -1,
-#                         user.get('friends_count', 0) or -1,
-#                         user.get('listed_count', 0) or -1,
-#                         user.get('statuses_count', 0) or -1,
-#                         user.get('statuses_count', 0) or -1
-#                     ))
-#             except json.JSONDecodeError as e:
-#                 print(f"Error decoding JSON in file {json_file}: {e}")
-#     # Insert all users from the current file
-#     load_users_batch(cursor, users)
-#     connection.commit()
-#     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Users from {json_file} inserted successfully. ({index}/{total_files})")
+                    users.append((
+                        user_id,
+                        user.get('name', " ") or " ",
+                        user.get('screen_name', None),
+                        user.get('description', None),
+                        user.get('verified', False) or False,
+                        user.get('followers_count', 0) or -1,
+                        user.get('friends_count', 0) or -1,
+                        user.get('listed_count', 0) or -1,
+                        user.get('statuses_count', 0) or -1,
+                        user.get('statuses_count', 0) or -1
+                    ))
+            except json.JSONDecodeError as e:
+                print(f"Error decoding JSON in file {json_file}: {e}")
+    # Insert all users from the current file
+    load_users_batch(cursor, users)
+    connection.commit()
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Users from {json_file} inserted successfully. ({index}/{total_files})")
 
-#     # Log the last processed line
-#     with open(processed_lines_path, 'w') as log_file:
-#         processed_lines[json_file] = line_number
-#         for file_name, last_line in processed_lines.items():
-#             log_file.write(f"{file_name}:{last_line}\n")
+    # Log the last processed line
+    with open(processed_lines_path, 'w') as log_file:
+        processed_lines[json_file] = line_number
+        for file_name, last_line in processed_lines.items():
+            log_file.write(f"{file_name}:{last_line}\n")
 
-# print("All users inserted successfully.")
+print("All users inserted successfully.")
 # Second iteration: Add all tweets
-# for index, json_file in enumerate(json_files, start=1):
-#     json_path = os.path.join(data_directory, json_file)
-#     last_processed_line = processed_lines.get(json_file, 0)
-#     tweets = []
-#     with open(json_path, 'r', encoding='utf8') as file:
-#         for line_number, line in enumerate(file, start=1):
-#             if line_number <= last_processed_line:
-#                 continue  # Skip already processed lines
-#             try:
-#                 data = json.loads(line)
-#                 tweet_id_str = data.get('id_str')
-#                 if tweet_id_str:
-#                     try:
-#                         tweet_id = int(tweet_id_str)  # Convert id_str to BIGINT
-#                     except ValueError as e:
-#                         print(f"Error converting id_str to BIGINT in file {json_file}: {e}")
-#                         continue  # Skip this tweet if conversion fails
+for index, json_file in enumerate(json_files, start=1):
+    json_path = os.path.join(data_directory, json_file)
+    last_processed_line = processed_lines.get(json_file, 0)
+    tweets = []
+    with open(json_path, 'r', encoding='utf8') as file:
+        for line_number, line in enumerate(file, start=1):
+            if line_number <= last_processed_line:
+                continue  # Skip already processed lines
+            try:
+                data = json.loads(line)
+                tweet_id_str = data.get('id_str')
+                if tweet_id_str:
+                    try:
+                        tweet_id = int(tweet_id_str)  # Convert id_str to BIGINT
+                    except ValueError as e:
+                        print(f"Error converting id_str to BIGINT in file {json_file}: {e}")
+                        continue  # Skip this tweet if conversion fails
                     
-#                   # Convert all relevant fields to BIGINT or INT as needed
-#                 def safe_int(val):
-#                     try:
-#                         return int(val)
-#                     except (TypeError, ValueError):
-#                         return None
+                  # Convert all relevant fields to BIGINT or INT as needed
+                def safe_int(val):
+                    try:
+                        return int(val)
+                    except (TypeError, ValueError):
+                        return None
+                
+                # Safely get full_text if available, otherwise fallback
+                extended_tweet = data.get('extended_tweet')
+                if extended_tweet and isinstance(extended_tweet, dict):
+                    tweet_text = extended_tweet.get('full_text')
+                else:
+                    tweet_text = None
+
+                if not tweet_text:
+                    tweet_text = data.get('full_text') or data.get('text', '')
+
+                tweet_text = tweet_text.replace('\n', ' ').strip()
                     
-#                 in_reply_to_status_id = safe_int(data.get('in_reply_to_status_id_str'))
-#                 in_reply_to_user = safe_int(data.get('in_reply_to_user_id_str'))
-#                 user = data.get('user', {})
-#                 user_id = safe_int(user.get('id_str'))
-#                 retweeted_status = data.get('retweeted_status', {})
-#                 retweeted_id = safe_int(retweeted_status.get('id_str')) if retweeted_status else None
+                in_reply_to_status_id = safe_int(data.get('in_reply_to_status_id_str'))
+                in_reply_to_user = safe_int(data.get('in_reply_to_user_id_str'))
+                user = data.get('user', {})
+                user_id = safe_int(user.get('id_str'))
+                retweeted_status = data.get('retweeted_status', {})
+                retweeted_id = safe_int(retweeted_status.get('id_str')) if retweeted_status else None
                     
-#                 created_at_int = data.get('created_at')
-#                 if isinstance(created_at_int, int):  # Ensure it's a valid integer
-#                     created_at = datetime.fromtimestamp(created_at_int / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-#                 else:
-#                     created_at = None  # Handle missing or invalid created_at
+                created_at_int = data.get('created_at')
+                if isinstance(created_at_int, int):  # Ensure it's a valid integer
+                    created_at = datetime.fromtimestamp(created_at_int / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    created_at = None  # Handle missing or invalid created_at
 
-#                 try:
-#                     user = data.get('user', {})
-#                     user_id = user['id_str']  # Convert id_str to BIGINT
-#                 except ValueError as e:
-#                     print(f"Error converting id_str to BIGINT in file {json_file}: {e}")
-#                     continue  # Skip this user if conversion fails
+                try:
+                    user = data.get('user', {})
+                    user_id = user['id_str']  # Convert id_str to BIGINT
+                except ValueError as e:
+                    print(f"Error converting id_str to BIGINT in file {json_file}: {e}")
+                    continue  # Skip this user if conversion fails
 
-#                 # Safely handle retweeted_status
-#                 retweeted_status = data.get('retweeted_status', {})
-#                 retweeted_id = retweeted_status.get('id') if retweeted_status else None
+                # Safely handle retweeted_status
+                retweeted_status = data.get('retweeted_status', {})
+                retweeted_id = retweeted_status.get('id') if retweeted_status else None
 
-#                 tweets.append((
-#                     tweet_id,
-#                     data.get('text'),
-#                     created_at,
-#                     in_reply_to_status_id,
-#                     in_reply_to_user,
-#                     user_id,
-#                     data.get('quoted_status_id'),
-#                     retweeted_id,
-#                     data.get('quote_count', 0),
-#                     data.get('reply_count', 0),
-#                     data.get('retweet_count', 0),
-#                     data.get('favorite_count', 0),
-#                     data.get('possibly_sensitive', False),
-#                     data.get('lang'),
-#                     0
-#                 ))
-#             except json.JSONDecodeError as e:
-#                 print(f"Error decoding JSON in file {json_file}: {e}")
-#         # Insert all tweets from the current file
-#         load_tweets_batch(cursor, tweets)
-#         connection.commit()
-#         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Tweets from {json_file} inserted successfully. ({index}/{total_files})")
-#         # Log the last processed line for this file
-#         processed_lines[json_file] = line_number
-#         with open(processed_lines_path, 'w') as log_file:
-#             for file_name, last_line in processed_lines.items():
-#                 log_file.write(f"{file_name}:{last_line}\n")
-# print("All tweets inserted successfully.")
+                tweets.append((
+                    tweet_id,
+                    extended_tweet,
+                    created_at,
+                    in_reply_to_status_id,
+                    in_reply_to_user,
+                    user_id,
+                    data.get('quoted_status_id'),
+                    retweeted_id,
+                    data.get('quote_count', 0),
+                    data.get('reply_count', 0),
+                    data.get('retweet_count', 0),
+                    data.get('favorite_count', 0),
+                    data.get('possibly_sensitive', False),
+                    data.get('lang'),
+                    0
+                ))
+            except json.JSONDecodeError as e:
+                print(f"Error decoding JSON in file {json_file}: {e}")
+        # Insert all tweets from the current file
+        load_tweets_batch(cursor, tweets)
+        connection.commit()
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Tweets from {json_file} inserted successfully. ({index}/{total_files})")
+        # Log the last processed line for this file
+        processed_lines[json_file] = line_number
+        with open(processed_lines_path, 'w') as log_file:
+            for file_name, last_line in processed_lines.items():
+                log_file.write(f"{file_name}:{last_line}\n")
+print("All tweets inserted successfully.")
 
 for index, json_file in enumerate(json_files, start=1):
     json_path = os.path.join(data_directory, json_file)
