@@ -1,221 +1,328 @@
-import os
-import json
-import pyodbc
-import pandas as pd
-from collections import defaultdict
+import logging
+from datetime import datetime
+from db_repository import (
+    get_connection,
+    get_airline_id,
+    insert_conversation,
+    insert_conversation_tweets,
+    truncate_tables,
+    get_screen_name_by_id
+)
 from tqdm import tqdm
-import multiprocessing as mp
-import db_repository as repo
+from collections import defaultdict
 
-# General configuration
-BATCH_SIZE = 1000  # Process this many tweets at once
-NUM_PROCESSES = max(1, mp.cpu_count() - 1)  # Use all but one CPU core
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-def mine_conversations_batch(airline_screen_name, batch_start=0, batch_size=BATCH_SIZE):
-    """Process conversations in efficient batches."""
-    conn = repo.get_connection()
-    airline_id = repo.get_airline_id(conn, airline_screen_name)
+def fetch_conversation_components(conn, airline_id):
+    """
+    Efficiently fetch all potential conversation components in a single query.
+    Returns tweets organized by their relationships.
+    """
+    logger.info("Fetching potential conversation components...")
     
-    # 1. Get only airline tweets that are replies (filtering at DB level)
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT t.id, t.in_reply_to_status_id, t.user_id
+    # Base query for conversation components
+    base_query = """
+    WITH conversation_tweets AS (
+        -- Start with airline replies (these are conversation starters)
+        SELECT id, user_id, in_reply_to_status_id, created_at
+        FROM tweet
+        WHERE user_id = ? 
+        AND in_reply_to_status_id IS NOT NULL
+
+        UNION
+
+        -- Add tweets that airline replied to
+        SELECT t.id, t.user_id, t.in_reply_to_status_id, t.created_at
         FROM tweet t
-        WHERE t.user_id = ?
-          AND t.in_reply_to_status_id IS NOT NULL
-        ORDER BY t.created_at
-        OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
-    """, (airline_id, batch_start, batch_size))
-    
-    airline_replies = cursor.fetchall()
-    if not airline_replies:
-        return []
-    
-    # 2. Build a set of all tweet IDs we need to fetch (parent tweets and reply tweets)
-    needed_tweet_ids = set()
-    parent_ids = set()
-    
-    for reply in airline_replies:
-        needed_tweet_ids.add(reply[0])  # Reply ID
-        parent_ids.add(reply[1])        # Parent ID
-    
-    # 3. Get all parent tweets in one query
-    parent_placeholders = ','.join(['?' for _ in parent_ids])
-    cursor.execute(f"""
-        SELECT t.id, t.user_id, t.in_reply_to_status_id 
+        INNER JOIN tweet airline_replies ON airline_replies.in_reply_to_status_id = t.id
+        WHERE airline_replies.user_id = ?
+
+        UNION
+
+        -- Add context tweets (tweets before the ones airline replied to)
+        SELECT t.id, t.user_id, t.in_reply_to_status_id, t.created_at
         FROM tweet t
-        WHERE t.id IN ({parent_placeholders})
-    """, tuple(parent_ids))
-    
-    parent_tweets = {row[0]: row for row in cursor.fetchall()}
-    for tweet_id, tweet_data in parent_tweets.items():
-        needed_tweet_ids.add(tweet_id)
-    
-    # 4. Find all potential replies in one query
-    reply_cursor = conn.cursor()
-    reply_cursor.execute(f"""
-        SELECT t.id, t.in_reply_to_status_id, t.user_id
+        INNER JOIN tweet parent_tweets ON t.id = parent_tweets.in_reply_to_status_id
+        WHERE parent_tweets.id IN (
+            SELECT in_reply_to_status_id 
+            FROM tweet 
+            WHERE user_id = ? 
+            AND in_reply_to_status_id IS NOT NULL
+        )
+
+        UNION
+
+        -- Add follow-up replies to airline tweets
+        SELECT t.id, t.user_id, t.in_reply_to_status_id, t.created_at
         FROM tweet t
-        WHERE t.in_reply_to_status_id IN ({','.join(['?' for _ in needed_tweet_ids])})
-    """, tuple(needed_tweet_ids))
+        INNER JOIN tweet airline_tweets ON t.in_reply_to_status_id = airline_tweets.id
+        WHERE airline_tweets.user_id = ?
+    )
+    """
     
-    replies = defaultdict(list)
-    for row in reply_cursor.fetchall():
-        reply_id, parent_id, user_id = row
-        replies[parent_id].append((reply_id, user_id))
+    # First get the count for progress bar
+    count_sql = base_query + "\nSELECT COUNT(*) as total FROM conversation_tweets"
+    cur = conn.execute(count_sql, (airline_id, airline_id, airline_id, airline_id))
+    total_tweets = cur.fetchone()[0]
     
-    # 5. Process each airline reply
-    conversations = []
+    # Now get the actual data
+    data_sql = base_query + """
+    SELECT 
+        id,
+        user_id,
+        in_reply_to_status_id,
+        created_at
+    FROM conversation_tweets
+    ORDER BY created_at
+    """
+    
+    cur = conn.execute(data_sql, (airline_id, airline_id, airline_id, airline_id))
+    
+    # Organize tweets into useful data structures with progress bar
+    tweets_by_id = {}
+    replies_to = defaultdict(list)
+    
+    with tqdm(total=total_tweets, desc="Loading tweets") as pbar:
+        for row in cur:
+            tweets_by_id[row.id] = row
+            if row.in_reply_to_status_id:
+                replies_to[row.in_reply_to_status_id].append(row.id)
+            pbar.update(1)
+    
+    return tweets_by_id, replies_to
+
+def build_conversation(tweet_id, tweets_by_id, replies_to, airline_id, seen_ids):
+    """
+    Build a valid conversation starting from an airline reply tweet.
+    Returns None if the conversation is invalid or uses already seen tweets.
+    """
+    tweet = tweets_by_id.get(tweet_id)
+    if not tweet or tweet.user_id != airline_id or tweet.id in seen_ids:
+        return None
+        
+    # Get the parent tweet
+    parent = tweets_by_id.get(tweet.in_reply_to_status_id)
+    if not parent:
+        return None
+        
+    original_user_id = parent.user_id
+    allowed_user_ids = {airline_id, original_user_id}
+    
+    # Build conversation chain
+    convo_ids = []
+    
+    # 1. Get context chain before parent
+    current = parent
+    while current and current.in_reply_to_status_id:
+        prev = tweets_by_id.get(current.in_reply_to_status_id)
+        if not prev or prev.user_id not in allowed_user_ids:
+            break
+        convo_ids.insert(0, prev.id)
+        current = prev
+    
+    # 2. Add parent tweet
+    convo_ids.append(parent.id)
+    
+    # 3. Add airline's reply
+    convo_ids.append(tweet.id)
+    
+    # 4. Add follow-up replies (breadth-first to maintain conversation flow)
+    to_process = [tweet.id]
+    while to_process:
+        current_id = to_process.pop(0)
+        for reply_id in replies_to.get(current_id, []):
+            reply = tweets_by_id.get(reply_id)
+            if reply and reply.user_id in allowed_user_ids:
+                convo_ids.append(reply.id)
+                to_process.append(reply.id)
+    
+    # Verify no overlap with seen tweets
+    if seen_ids.intersection(convo_ids):
+        return None
+        
+    # Verify all participants are allowed
+    participants = {tweets_by_id[tid].user_id for tid in convo_ids}
+    if not participants <= allowed_user_ids:
+        return None
+        
+    return original_user_id, parent.id, convo_ids
+
+def mine_conversations(conn, airline_id):
+    """
+    Extract valid conversations using optimized batch processing.
+    """
+    # Fetch all potential conversation components efficiently
+    tweets_by_id, replies_to = fetch_conversation_components(conn, airline_id)
+    
+    # Find airline replies that could start conversations
+    potential_starts = [
+        tweet_id for tweet_id, tweet in tweets_by_id.items()
+        if tweet.user_id == airline_id and tweet.in_reply_to_status_id
+    ]
+    
+    logger.info(f"Processing {len(potential_starts)} potential conversation starts")
+    
     seen_ids = set()
+    conversations = []
     
-    for airline_reply in airline_replies:
-        reply_id, parent_id, _ = airline_reply
-        
-        if reply_id in seen_ids or parent_id not in parent_tweets:
-            continue
-        
-        parent_user_id = parent_tweets[parent_id][1]
-        allowed_user_ids = {airline_id, parent_user_id}
-        
-        # Get conversation context recursively but with DB caching
-        convo_ids = get_conversation_context(conn, parent_id, allowed_user_ids)
-        convo_ids.append(parent_id)
-        convo_ids.append(reply_id)
-        
-        # Get conversation replies recursively but with DB caching
-        reply_ids = get_conversation_replies(reply_id, replies, allowed_user_ids)
-        convo_ids.extend(reply_ids)
-        
-        # Check if this is a new conversation with just the two participants
-        if not seen_ids.intersection(convo_ids):
-            seen_ids.update(convo_ids)
-            conversations.append((parent_user_id, parent_id, convo_ids))
-            
-            # Store in DB immediately to avoid memory buildup
-            repo.insert_conversation(conn, parent_user_id, airline_id, parent_id)
-            repo.insert_conversation_tweets(conn, cursor.lastrowid, convo_ids)
+    # Process each potential conversation with progress bar
+    with tqdm(total=len(potential_starts), desc="Mining conversations") as pbar:
+        for tweet_id in potential_starts:
+            result = build_conversation(tweet_id, tweets_by_id, replies_to, airline_id, seen_ids)
+            if result:
+                user_id, root_id, convo_ids = result
+                seen_ids.update(convo_ids)
+                conversations.append((user_id, root_id, convo_ids))
+            pbar.update(1)
     
-    conn.commit()
-    conn.close()
     return conversations
 
-def get_conversation_context(conn, tweet_id, allowed_user_ids, _cache=None):
-    """Recursively get context with DB caching."""
-    if _cache is None:
-        _cache = {}
-        
-    if tweet_id in _cache:
-        return _cache[tweet_id]
+def format_conversation(conn, user_id, root_id, tweet_ids):
+    """
+    Format a single conversation in a readable way.
+    Returns a list of strings representing each line of the conversation.
+    """
+    lines = []
     
-    cursor = conn.cursor()
-    context = []
-    
-    # Get parent tweet info
-    cursor.execute("""
-        SELECT t.id, t.user_id, t.in_reply_to_status_id
+    # Get all tweets in this conversation with their details
+    placeholders = ','.join(['?' for _ in tweet_ids])
+    cur = conn.execute(f"""
+        SELECT 
+            t.id,
+            t.created_at,
+            t.text,
+            u.screen_name,
+            t.in_reply_to_status_id
         FROM tweet t
-        WHERE t.id = ?
-    """, (tweet_id,))
+        JOIN [user] u ON t.user_id = u.id
+        WHERE t.id IN ({placeholders})
+        ORDER BY t.created_at
+    """, tweet_ids)
     
-    row = cursor.fetchone()
-    if not row or not row[2]:  # No parent or root tweet
-        _cache[tweet_id] = []
-        return []
-        
-    parent_id = row[2]
+    tweets = cur.fetchall()
     
-    # Get parent tweet
-    cursor.execute("""
-        SELECT t.id, t.user_id
-        FROM tweet t
-        WHERE t.id = ?
-    """, (parent_id,))
+    # Convert timestamps and format each tweet
+    formatted_tweets = []
+    for tweet in tweets:
+        # Convert timestamp to milliseconds since epoch
+        try:
+            if isinstance(tweet.created_at, str):
+                timestamp = int(datetime.strptime(tweet.created_at, "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
+            else:
+                timestamp = int(tweet.created_at.timestamp() * 1000)
+        except (ValueError, AttributeError):
+            timestamp = 0
+            
+        formatted_tweets.append({
+            'timestamp': timestamp,
+            'screen_name': tweet.screen_name,
+            'text': tweet.text,
+            'id': tweet.id,
+            'in_reply_to_status_id': tweet.in_reply_to_status_id
+        })
     
-    parent = cursor.fetchone()
-    if not parent or parent[1] not in allowed_user_ids:
-        _cache[tweet_id] = []
-        return []
+    # Sort by timestamp
+    formatted_tweets.sort(key=lambda x: x['timestamp'])
     
-    # Add parent and get its context
-    context.append(parent_id)
-    parent_context = get_conversation_context(conn, parent_id, allowed_user_ids, _cache)
-    context = parent_context + context
-    
-    _cache[tweet_id] = context
-    return context
+    return formatted_tweets
 
-def get_conversation_replies(tweet_id, replies_map, allowed_user_ids, _visited=None):
-    """Get all replies using pre-fetched replies map."""
-    if _visited is None:
-        _visited = set()
+def print_conversations(conn, conversations, airline_screen_name, output_file=None):
+    """
+    Print all conversations in a readable format.
+    If output_file is provided, write to that file instead of printing to console.
+    """
+    def write_line(line):
+        if output_file:
+            output_file.write(line + '\n')
+        else:
+            print(line)
     
-    if tweet_id in _visited:
-        return []
+    total = len(conversations)
+    logger.info(f"Formatting {total} conversations...")
     
-    _visited.add(tweet_id)
-    all_replies = []
-    
-    for reply_id, user_id in replies_map.get(tweet_id, []):
-        if user_id in allowed_user_ids:
-            all_replies.append(reply_id)
-            all_replies.extend(get_conversation_replies(reply_id, replies_map, allowed_user_ids, _visited))
-    
-    return all_replies
+    # Add progress bar for conversation formatting
+    with tqdm(total=total, desc="Formatting conversations") as pbar:
+        for i, (user_id, root_id, tweet_ids) in enumerate(conversations, 1):
+            try:
+                formatted_tweets = format_conversation(conn, user_id, root_id, tweet_ids)
+                
+                write_line(f"\n--- Conversation {i}/{total} Start ({airline_screen_name}) ---")
+                
+                for tweet in formatted_tweets:
+                    text = tweet['text'].replace('\n', ' ').strip()
+                    line = f"(Time: {tweet['timestamp']}) @{tweet['screen_name']}: {text}"
+                    write_line(line)
+                
+                write_line(f"--- Conversation End ---")
+                
+            except Exception as e:
+                logger.error(f"Error formatting conversation {i}: {str(e)}")
+                continue
+                
+            pbar.update(1)
 
-def process_airline_parallel(airline_screen_name):
-    """Process an airline's conversations using multiple processes."""
-    conn = repo.get_connection()
-    cursor = conn.cursor()
-    
-    # Get total count of airline replies
-    airline_id = repo.get_airline_id(conn, airline_screen_name)
-    cursor.execute("""
-        SELECT COUNT(*)
-        FROM tweet t
-        WHERE t.user_id = ?
-          AND t.in_reply_to_status_id IS NOT NULL
-    """, (airline_id,))
-    
-    total_tweets = cursor.fetchone()[0]
-    conn.close()
-    
-    # Create batch ranges
-    batches = [(airline_screen_name, i, BATCH_SIZE) 
-              for i in range(0, total_tweets, BATCH_SIZE)]
-    
-    # Process in parallel
-    with mp.Pool(NUM_PROCESSES) as pool:
-        results = list(tqdm(
-            pool.starmap(mine_conversations_batch, batches),
-            total=len(batches),
-            desc=f"Mining {airline_screen_name} conversations"
-        ))
-    
-    # Count total conversations
-    total_conversations = sum(len(batch) for batch in results)
-    print(f"Found {total_conversations} conversations for {airline_screen_name}")
-    return total_conversations
+def mine_and_store_conversations(airline_screen_name, output_path=None):
+    """
+    Main function to extract, store, and display conversations for a given airline.
+    Args:
+        airline_screen_name: The screen name of the airline (e.g., "AmericanAir")
+        output_path: Optional path to save formatted conversations to a file
+    """
+    conn = get_connection()
+    try:
+        airline_id = get_airline_id(conn, airline_screen_name)
+        if not airline_id:
+            logger.error(f"Could not find airline ID for {airline_screen_name}")
+            return
+            
+        logger.info(f"Processing conversations for {airline_screen_name} (ID: {airline_id})")
+        
+        # Mine conversations
+        conversations = mine_conversations(conn, airline_id)
+        logger.info(f"Found {len(conversations)} valid conversations")
+        
+        # Store conversations in database with progress bar
+        with tqdm(total=len(conversations), desc="Storing conversations") as pbar:
+            for user_id, root_id, tweet_ids in conversations:
+                try:
+                    conv_id = insert_conversation(conn, user_id, airline_id, root_id)
+                    insert_conversation_tweets(conn, conv_id, tweet_ids)
+                except Exception as e:
+                    logger.error(f"Error storing conversation: {str(e)}")
+                    continue
+                pbar.update(1)
+        
+        # Print or save formatted conversations
+        if output_path:
+            with open(output_path, 'w', encoding='utf-8') as f:
+                print_conversations(conn, conversations, airline_screen_name, f)
+            logger.info(f"Conversations saved to {output_path}")
+        else:
+            print_conversations(conn, conversations, airline_screen_name)
+                
+        logger.info(f"Successfully processed all conversations for {airline_screen_name}")
+        
+    except Exception as e:
+        logger.error(f"Error processing conversations: {str(e)}")
+        raise
+    finally:
+        conn.close()
 
 if __name__ == "__main__":
-    # Create indexes if they don't exist (one-time operation)
-    conn = repo.get_connection()
-    cursor = conn.cursor()
     try:
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tweet_user_id ON tweet(user_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tweet_in_reply ON tweet(in_reply_to_status_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tweet_created ON tweet(created_at)")
-        conn.commit()
-    except:
-        pass  # Indexes might already exist or not supported
-    conn.close()
-    
-    # Process airlines
-    airlines = ["AmericanAir", "united", "SouthwestAir", "JetBlue", "Delta"]
-    total = 0
-    
-    for airline in airlines:
-        count = process_airline_parallel(airline)
-        total += count
-        
-    print(f"Total conversations stored: {total}")
-    
+        # Add progress bar for table truncation
+        tables = ['conversation_tweet', 'conversation']
+        with tqdm(total=len(tables), desc="Truncating tables") as pbar:
+            for table in tables:
+                truncate_tables([table])
+                pbar.update(1)
+                
+        output_file = "conversations_output.txt"
+        mine_and_store_conversations("AmericanAir", output_file)
+    except Exception as e:
+        logger.error(f"Fatal error: {str(e)}")
