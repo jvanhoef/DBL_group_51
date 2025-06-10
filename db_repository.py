@@ -86,6 +86,19 @@ def get_conversation_text_by_id(conn, conversation_id):
     rows = cursor.fetchall()
     return pd.DataFrame.from_records(rows, columns=columns)
 
+# Add to db_repository.py
+
+def create_indexes(conn):
+    """Create indexes to speed up queries."""
+    cursor = conn.cursor()
+    try:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tweet_user_id ON tweet(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tweet_in_reply ON tweet(in_reply_to_status_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tweet_created ON tweet(created_at)")
+        conn.commit()
+    except Exception as e:
+        print(f"Error creating indexes: {e}")
+
 #setters
 def insert_conversation(conn, user_id, airline_id, root_tweet_id):
     cursor = conn.cursor()
@@ -106,6 +119,14 @@ def insert_conversation_tweets(conn, conversation_id, tweet_ids):
             VALUES (?, ?)
         """, (conversation_id, tid))
     conn.commit()
+    
+def get_tweet_by_id(conn, tweet_id):
+    """Get a single tweet by ID."""
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM tweet WHERE id = ?", (tweet_id,))
+    columns = [column[0] for column in cursor.description]
+    row = cursor.fetchone()
+    return dict(zip(columns, row)) if row else None
     
 #Debugging
 def print_conversation_nicely(conversation_id, airline_id):
