@@ -18,6 +18,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Dictionary of known airlines with their IDs
+KNOWN_AIRLINES = {
+    'KLM': 106062176,
+    'AirFrance': 106062176,
+    'British_Airways': 18332190,
+    'AmericanAir': 22536055,
+    'Lufthansa': 124476322,
+    'AirBerlin': 26223583,
+    'AirBerlin_assist': 2182373406,
+    'easyJet': 38676903,
+    'RyanAir': 1542862735,
+    'SingaporeAir': 253340062,
+    'Qantas': 218730857,
+    'EtihadAirways': 45621423,
+    'VirginAtlantic': 20626359
+}
+
 def fetch_conversation_components(conn, airline_id):
     """
     Efficiently fetch all potential conversation components in a single query.
@@ -315,14 +332,46 @@ def mine_and_store_conversations(airline_screen_name, output_path=None):
 
 if __name__ == "__main__":
     try:
-        # Add progress bar for table truncation
-        tables = ['conversation_tweet', 'conversation']
-        with tqdm(total=len(tables), desc="Truncating tables") as pbar:
-            for table in tables:
-                truncate_tables([table])
-                pbar.update(1)
-                
-        output_file = "conversations_output.txt"
-        mine_and_store_conversations("AmericanAir", output_file)
+        # Get list of available airlines
+        print("\nAvailable airlines:")
+        for airline, airline_id in KNOWN_AIRLINES.items():
+            print(f"- {airline}")
+
+        # Check existing conversations
+        conn = get_connection()
+        cur = conn.execute("""
+            SELECT u.screen_name, COUNT(*) as conv_count 
+            FROM conversation c 
+            JOIN [user] u ON c.airline_id = u.id 
+            GROUP BY u.screen_name
+        """)
+        existing = {row[0]: row[1] for row in cur.fetchall()}
+        
+        if existing:
+            print("\nExisting conversations in database:")
+            for airline, count in existing.items():
+                print(f"- {airline}: {count} conversations")
+        
+        airline_screen_name = input("\nEnter the airline screen name to analyze: ")
+        
+        if airline_screen_name not in KNOWN_AIRLINES:
+            print(f"Warning: {airline_screen_name} is not a known airline. Available airlines are: {list(KNOWN_AIRLINES.keys())}")
+            exit()
+        
+        if airline_screen_name in existing:
+            clear = input(f"\nFound {existing[airline_screen_name]} existing conversations for {airline_screen_name}. Clear them? (y/n): ").lower()
+            if clear == 'y':
+                print("Clearing existing conversations...")
+                tables = ['conversation_tweet', 'conversation']
+                with tqdm(total=len(tables), desc="Truncating tables") as pbar:
+                    for table in tables:
+                        truncate_tables([table])
+                        pbar.update(1)
+            else:
+                print("Keeping existing conversations. New conversations will be added to the existing ones.")
+            
+        output_file = f"conversations_{airline_screen_name}_output.txt"
+        mine_and_store_conversations(airline_screen_name, output_file)
+        
     except Exception as e:
         logger.error(f"Fatal error: {str(e)}")
