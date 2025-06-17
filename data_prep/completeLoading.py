@@ -63,8 +63,9 @@ def log_summary(message):
     with open(summary_log_path, 'a') as log_file:
         log_file.write(f"[{timestamp}] {message}\n")
 
-# Convert timestamp function
+# Helper functions
 def convert_timestamp(ts):
+    """Convert timestamp to standard format."""
     try:
         # Check if it's a Unix timestamp (in milliseconds)
         if isinstance(ts, int):
@@ -79,7 +80,6 @@ def convert_timestamp(ts):
         print(f"Error parsing timestamp: {e}")
         return None
 
-# Safe integer conversion
 def safe_int(val):
     """Safely convert value to integer."""
     try:
@@ -89,14 +89,12 @@ def safe_int(val):
     except (TypeError, ValueError):
         return None
 
-# Clean text by removing newlines and trimming
 def clean_text(text):
     """Clean text by removing newlines and trimming."""
     if text:
         return text.replace('\n', ' ').strip()
     return None
 
-# Data processing functions
 def clean_user_object(user):
     """Clean and validate user object."""
     if not user or not isinstance(user, dict):
@@ -206,6 +204,237 @@ def extract_entities(data, tweet_id):
             ))
             
     return hashtags, mentions
+
+# Database functions
+def setup_database_tables():
+    """Create all necessary database tables if they don't exist."""
+    try:
+        # Create user table
+        cursor.execute("""
+        IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'user')
+        CREATE TABLE [user] (
+            id BIGINT PRIMARY KEY,
+            name NVARCHAR(100) NOT NULL,
+            screen_name NVARCHAR(50),
+            description NVARCHAR(MAX),
+            verified BIT DEFAULT 0,
+            followers_count INT DEFAULT 0,
+            friends_count INT DEFAULT 0,
+            listed_count INT DEFAULT 0,
+            favorites_count INT DEFAULT 0,
+            status_count INT DEFAULT 0
+        )
+        """)
+        
+        # Create tweet table with foreign keys
+        cursor.execute("""
+        IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'tweet')
+        CREATE TABLE tweet (
+            id BIGINT PRIMARY KEY,
+            text NVARCHAR(MAX),
+            created_at DATETIME,
+            in_reply_to_status_id BIGINT,
+            in_reply_to_user BIGINT,
+            user_id BIGINT NOT NULL,
+            quoted_status_id BIGINT,
+            retweeted_id BIGINT,
+            quote_count INT DEFAULT 0,
+            reply_count INT DEFAULT 0,
+            retweet_count INT DEFAULT 0,
+            favorite_count INT DEFAULT 0,
+            possibly_sensitive BIT DEFAULT 0,
+            language NVARCHAR(10),
+            sentiment FLOAT DEFAULT 0,
+            FOREIGN KEY (user_id) REFERENCES [user](id),
+        )
+        """)
+        
+        # Create hashtag table
+        cursor.execute("""
+        IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'hashtag')
+        CREATE TABLE hashtag (
+            id INT IDENTITY(1,1) PRIMARY KEY,
+            text NVARCHAR(280) NOT NULL,
+            indices NVARCHAR(50),
+            tweet_id BIGINT NOT NULL,
+            FOREIGN KEY (tweet_id) REFERENCES tweet(id)
+        )
+        """)
+        
+        # Create mention table
+        cursor.execute("""
+        IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'mention')
+        CREATE TABLE mention (
+            id INT IDENTITY(1,1) PRIMARY KEY,
+            indices NVARCHAR(50),
+            tweet_id BIGINT NOT NULL,
+            name NVARCHAR(100),
+            FOREIGN KEY (tweet_id) REFERENCES tweet(id)
+        )
+        """)
+        
+        # # Create conversation table for storing conversation metadata
+        # cursor.execute("""
+        # IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'conversation')
+        # CREATE TABLE conversation (
+        #     id INT IDENTITY(1,1) PRIMARY KEY,
+        #     user_id BIGINT NOT NULL,
+        #     airline_id BIGINT NOT NULL,
+        #     root_tweet_id BIGINT NOT NULL,
+        #     created_at DATETIME DEFAULT GETDATE(),
+        #     FOREIGN KEY (user_id) REFERENCES [user](id),
+        #     FOREIGN KEY (airline_id) REFERENCES [user](id),
+        #     FOREIGN KEY (root_tweet_id) REFERENCES tweet(id)
+        # )
+        # """)
+        
+        # # Create conversation_tweet junction table
+        # cursor.execute("""
+        # IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'conversation_tweet')
+        # CREATE TABLE conversation_tweet (
+        #     conversation_id INT NOT NULL,
+        #     tweet_id BIGINT NOT NULL,
+        #     PRIMARY KEY (conversation_id, tweet_id),
+        #     FOREIGN KEY (conversation_id) REFERENCES conversation(id),
+        #     FOREIGN KEY (tweet_id) REFERENCES tweet(id)
+        # )
+        # """)
+        
+        connection.commit()
+        print("✓ Database tables created successfully")
+        log_summary("Database tables created successfully")
+        return True
+    except Exception as e:
+        print(f"! Error creating database tables: {e}")
+        log_summary(f"Error creating database tables: {e}")
+        return False
+    
+    # Replace your current index creation code with this:
+def create_indexes():
+    """Create indexes if they don't exist using SQL Server compatible syntax."""
+    try:
+        # Check and create user_id index
+        cursor.execute("""
+        IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_tweet_user_id' AND object_id = OBJECT_ID('dbo.tweet'))
+        BEGIN
+            CREATE INDEX idx_tweet_user_id ON tweet(user_id)
+        END
+        """)
+        
+        # Check and create reply index
+        cursor.execute("""
+        IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_tweet_reply' AND object_id = OBJECT_ID('dbo.tweet'))
+        BEGIN
+            CREATE INDEX idx_tweet_reply ON tweet(in_reply_to_status_id)
+        END
+        """)
+        
+        # Check and create created_at index
+        cursor.execute("""
+        IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_tweet_created_at' AND object_id = OBJECT_ID('dbo.tweet'))
+        BEGIN
+            CREATE INDEX idx_tweet_created_at ON tweet(created_at)
+        END
+        """)
+        
+        # Check and create screen_name index
+        cursor.execute("""
+        IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_user_screen_name' AND object_id = OBJECT_ID('dbo.[user]'))
+        BEGIN
+            CREATE INDEX idx_user_screen_name ON [user](screen_name)
+        END
+        """)
+        
+        connection.commit()
+        print("✓ Database indexes created or already exist")
+        log_summary("Database indexes created or already exist")
+        return True
+    except Exception as e:
+        print(f"! Could not create indexes - performance might be affected: {e}")
+        log_summary(f"Could not create indexes - performance might be affected: {e}")
+        return False
+
+def load_users_batch(cursor, users):
+    """Insert or update user data in the database in batches."""
+    if not users:
+        return
+
+    cursor.executemany("""
+        MERGE dbo.[user] AS target
+        USING (SELECT ? AS id, ? AS name, ? AS screen_name, ? AS description, ? AS verified, ? AS followers_count, ? AS friends_count, ? AS listed_count, ? AS favorites_count, ? AS status_count) AS source
+        ON target.id = source.id
+        WHEN MATCHED THEN
+            UPDATE SET 
+                name = source.name,
+                screen_name = source.screen_name,
+                description = source.description,
+                verified = source.verified,
+                followers_count = source.followers_count,
+                friends_count = source.friends_count,
+                listed_count = source.listed_count,
+                favorites_count = source.favorites_count,
+                status_count = source.status_count
+        WHEN NOT MATCHED THEN
+            INSERT (id, name, screen_name, description, verified, followers_count, friends_count, listed_count, favorites_count, status_count)
+            VALUES (source.id, source.name, source.screen_name, source.description, source.verified, source.followers_count, source.friends_count, source.listed_count, source.favorites_count, source.status_count);
+    """, users)
+    
+def load_tweets_batch(cursor, tweets):
+    """Insert or update tweet data in the database in batches."""
+    if not tweets:
+        return
+
+    cursor.executemany("""
+        MERGE dbo.tweet AS target
+        USING (SELECT ? AS id, ? AS text, ? AS created_at, ? AS in_reply_to_status_id, ? AS in_reply_to_user, 
+                      ? AS user_id, ? AS quoted_status_id, ? AS retweeted_id, 
+                      ? AS quote_count, ? AS reply_count, ? AS retweet_count, ? AS favorite_count, 
+                      ? AS possibly_sensitive, ? AS language, ? AS sentiment) AS source
+        ON target.id = source.id
+        WHEN MATCHED THEN
+            UPDATE SET 
+                text = source.text,
+                created_at = source.created_at,
+                in_reply_to_status_id = source.in_reply_to_status_id,
+                in_reply_to_user = source.in_reply_to_user,
+                user_id = source.user_id,
+                quoted_status_id = source.quoted_status_id,
+                retweeted_id = source.retweeted_id,
+                quote_count = source.quote_count,
+                reply_count = source.reply_count,
+                retweet_count = source.retweet_count,
+                favorite_count = source.favorite_count,
+                possibly_sensitive = source.possibly_sensitive,
+                language = source.language,
+                sentiment = source.sentiment
+        WHEN NOT MATCHED THEN
+            INSERT (id, text, created_at, in_reply_to_status_id, in_reply_to_user, 
+                    user_id, quoted_status_id, retweeted_id, quote_count, reply_count, retweet_count, 
+                    favorite_count, possibly_sensitive, language, sentiment)
+            VALUES (source.id, source.text, source.created_at, source.in_reply_to_status_id, source.in_reply_to_user, 
+                    source.user_id, source.quoted_status_id, source.retweeted_id, source.quote_count, source.reply_count, 
+                    source.retweet_count, source.favorite_count, source.possibly_sensitive, source.language, source.sentiment);
+    """, tweets)
+    
+def load_hashtags_batch(cursor, hashtags):
+    """Insert hashtag data in the database in batches without checking for duplicates."""
+    if not hashtags:
+        return
+
+    cursor.executemany("""
+        INSERT INTO dbo.hashtag (text, indices, tweet_id)
+        VALUES (?, ?, ?);
+    """, hashtags)
+    
+def load_mentions_batch(cursor, mentions):
+    """Insert mention data in the database in batches without checking for duplicates."""
+    if not mentions:
+        return
+
+    cursor.executemany("""
+        INSERT INTO dbo.mention (indices, tweet_id, name)
+        VALUES (?, ?, ?);
+    """, mentions)
 
 # Process a single file for a specific stage
 def process_file(json_file, stage):
@@ -352,6 +581,45 @@ def process_file(json_file, stage):
             
     return valid_lines, invalid_lines
 
+def process_stage(stage_number, json_files, description=None):
+    """
+    Process all files for a specific stage.
+    
+    Args:
+        stage_number: 1 for users, 2 for tweets, 3 for entities
+        json_files: List of JSON files to process
+        description: Optional description for logging
+    
+    Returns:
+        tuple: (valid_count, invalid_count)
+    """
+    stage_name = {1: "users", 2: "tweets", 3: "entities"}[stage_number]
+    description = description or f"Processing {stage_name}"
+    
+    print(f"\n--- STEP {stage_number}: {description} ---")
+    log_summary(f"Starting STEP {stage_number}: {description}")
+    
+    total_valid = 0
+    total_invalid = 0
+    
+    for json_file in json_files:
+        # Check if this file has already been completed for this stage
+        if progress[json_file][stage_number] > 0:
+            json_path = os.path.join(data_directory, json_file)
+            with open(json_path, 'r', encoding='utf8') as file:
+                file_lines = sum(1 for _ in file)
+            
+            if progress[json_file][stage_number] >= file_lines:
+                print(f"Skipping {stage_name} for {json_file} - already processed")
+                continue
+                
+        valid, invalid = process_file(json_file, stage=stage_number)
+        total_valid += valid
+        total_invalid += invalid
+    
+    print(f"Completed {stage_name} stage: {total_valid} valid, {total_invalid} invalid")
+    return total_valid, total_invalid
+
 # Main execution
 if __name__ == "__main__":
     # Get a list of all JSON files in the directory
@@ -366,76 +634,22 @@ if __name__ == "__main__":
     print(f"Found {total_files} JSON files to process.")
     log_summary(f"Starting processing of {total_files} JSON files")
     
-    # Create database indexes if they don't exist
-    try:
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tweet_user_id ON tweet(user_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tweet_reply ON tweet(in_reply_to_status_id)")
-        connection.commit()
-        print("✓ Database indexes created or already exist")
-        log_summary("Database indexes created or already exist")
-    except:
-        print("! Could not create indexes - performance might be affected")
-        log_summary("Could not create indexes - performance might be affected")
+    # Set up database tables
+    print("\n--- Setting up database structure ---")
+    if not setup_database_tables():
+        print("Failed to set up database tables. Exiting.")
+        sys.exit(1)
     
-    # Step 1: Load all users
-    print("\n--- STEP 1: Processing Users ---")
-    log_summary("Starting STEP 1: Processing Users")
-    total_valid_users = 0
-    total_invalid_users = 0
+    # Create database indexes
+    if not create_indexes():
+        print("Warning: Failed to create some indexes. Processing will continue but might be slower.")
     
-    for json_file in json_files:
-        # Check if this file has already been completed for this stage
-        if progress[json_file][1] > 0:
-            with open(json_path, 'r', encoding='utf8') as file:
-                file_lines = sum(1 for _ in file)
-            
-            if progress[json_file][1] >= file_lines:
-                print(f"Skipping users for {json_file} - already processed")
-                continue
-                
-        valid, invalid = process_file(json_file, stage=1)
-        total_valid_users += valid
-        total_invalid_users += invalid
+    # Process each stage sequentially for all files
+    total_valid_users, total_invalid_users = process_stage(1, json_files, "Processing Users")
     
-    # Step 2: Load all tweets
-    print("\n--- STEP 2: Processing Tweets ---")
-    log_summary("Starting STEP 2: Processing Tweets")
-    total_valid_tweets = 0
-    total_invalid_tweets = 0
+    total_valid_tweets, total_invalid_tweets = process_stage(2, json_files, "Processing Tweets")
     
-    for json_file in json_files:
-        # Check if this file has already been completed for this stage
-        if progress[json_file][2] > 0:
-            with open(os.path.join(data_directory, json_file), 'r', encoding='utf8') as file:
-                file_lines = sum(1 for _ in file)
-            
-            if progress[json_file][2] >= file_lines:
-                print(f"Skipping tweets for {json_file} - already processed")
-                continue
-                
-        valid, invalid = process_file(json_file, stage=2)
-        total_valid_tweets += valid
-        total_invalid_tweets += invalid
-    
-    # Step 3: Load all entities
-    print("\n--- STEP 3: Processing Entities ---")
-    log_summary("Starting STEP 3: Processing Entities")
-    total_valid_entities = 0
-    total_invalid_entities = 0
-    
-    for json_file in json_files:
-        # Check if this file has already been completed for this stage
-        if progress[json_file][3] > 0:
-            with open(os.path.join(data_directory, json_file), 'r', encoding='utf8') as file:
-                file_lines = sum(1 for _ in file)
-            
-            if progress[json_file][3] >= file_lines:
-                print(f"Skipping entities for {json_file} - already processed")
-                continue
-                
-        valid, invalid = process_file(json_file, stage=3)
-        total_valid_entities += valid
-        total_invalid_entities += invalid
+    total_valid_entities, total_invalid_entities = process_stage(3, json_files, "Processing Entities")
     
     # Final summary
     total_valid = total_valid_users + total_valid_tweets + total_valid_entities
@@ -446,7 +660,6 @@ if __name__ == "__main__":
     print(f"Tweets processed: {total_valid_tweets} valid, {total_invalid_tweets} invalid")
     print(f"Entities processed: {total_valid_entities} valid, {total_invalid_entities} invalid")
     print(f"Total: {total_valid} valid, {total_invalid} invalid lines")
-    print("\n✅ All data processed successfully!")
     
     # Log final summary
     log_summary("=== Processing Complete ===")
@@ -459,3 +672,4 @@ if __name__ == "__main__":
     cursor.close()
     connection.close()
     
+    print("\nAll data processed successfully!")
