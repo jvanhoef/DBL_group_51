@@ -39,6 +39,22 @@ def truncate_tables(tables):
             print(f"Error clearing table '{table}': {e}")
 
 #getters
+def get_issue_counts():
+    """Get counts of issues by type, sorted by count in descending order"""
+    conn = get_connection()
+    query = """
+    SELECT 
+        [issue_type],
+        COUNT(*) AS issue_count
+    FROM 
+        [airline_tweets].[dbo].[detected_issues]
+    GROUP BY 
+        [issue_type]
+    ORDER BY 
+        issue_count DESC;
+    """
+    return pd.read_sql(query, conn)
+
 def get_airline_id(conn, airline_screen_name):
     cursor = conn.cursor()
     cursor.execute("""
@@ -86,7 +102,102 @@ def get_conversation_text_by_id(conn, conversation_id):
     rows = cursor.fetchall()
     return pd.DataFrame.from_records(rows, columns=columns)
 
-# Add to db_repository.py
+def get_conversations_with_tweets_and_sentiment():
+    conn = get_connection()
+    """
+    Returns a DataFrame with: conversation_id, airline, tweet_id, created_at, sentiment, text, resolution_status
+    """
+    query = """
+   SELECT
+        c.id AS conversation_id,
+        u.screen_name AS airline,
+        t.id AS tweet_id,
+        t.created_at,
+        t.text,
+        t.sentiment,
+        di.resolved_in_conversation,
+        di.issue_type
+    FROM conversation c
+    JOIN conversation_tweet ct ON c.id = ct.conversation_id
+    JOIN tweet t ON ct.tweet_id = t.id
+    JOIN [user] u ON c.airline_id = u.id
+    JOIN detected_issues di ON di.conversation_id = c.id
+    ORDER BY c.id, t.created_at
+    """
+    df = pd.read_sql(query, conn)
+    return df
+
+def get_available_categories():
+    """Get list of all issue categories from database"""
+    conn = get_connection()
+    query = """
+    SELECT DISTINCT issue_type
+    FROM detected_issues
+    ORDER BY issue_type;
+    """
+    return pd.read_sql(query, conn)['issue_type'].tolist()
+
+def get_available_airlines(issue_type=None):
+    """Get list of airlines with issues of the specified type"""
+    conn = get_connection()
+    query = """
+    SELECT DISTINCT u.screen_name as airline
+    FROM detected_issues di
+    JOIN conversation c ON di.conversation_id = c.id
+    JOIN [user] u ON c.airline_id = u.id
+    WHERE 1=1
+    """ + (f"AND di.issue_type = '{issue_type}'" if issue_type else "") + """
+    ORDER BY u.screen_name;
+    """
+    return pd.read_sql(query, conn)['airline'].tolist()
+
+def get_sentiment_data(issue_type, selected_airlines=None):
+    """Get sentiment data for specified issue type and airlines"""
+    conn = get_connection()
+    
+    airline_filter = ""
+    if selected_airlines:
+        airlines_str = "','".join(selected_airlines)
+        airline_filter = f"AND u.screen_name IN ('{airlines_str}')"
+    
+    query = f"""
+    SELECT 
+        u.screen_name as airline,
+        cs.sentiment_change
+    FROM detected_issues di
+    JOIN conversation c ON di.conversation_id = c.id
+    JOIN [user] u ON c.airline_id = u.id
+    JOIN conversation_sentiment cs ON di.conversation_id = cs.conversation_id
+    WHERE di.issue_type = '{issue_type}'
+        AND cs.sentiment_change IS NOT NULL
+        {airline_filter}
+    """
+    
+    # Get raw data
+    df = pd.read_sql(query, conn)
+    
+    # Process data for each airline
+    results = []
+    for airline in df['airline'].unique():
+        airline_data = df[df['airline'] == airline]['sentiment_change']        # Count occurrences of each sentiment change category
+        improved = len(airline_data[airline_data == 'improved'])
+        worsened = len(airline_data[airline_data == 'worsened'])  # Using 'declined' from DB
+        unchanged = len(airline_data[airline_data == 'unchanged'])
+        total = improved + unchanged + worsened
+        # Calculate percentages
+        if total > 0:
+            results.append({
+                'airline': airline,
+                'total_issues': total,
+                'improved_count': improved,
+                'worsened_count': worsened,
+                'unchanged_count': unchanged,
+                'improved_pct': (improved/total*100),
+                'worsened_pct': (worsened/total*100),
+                'unchanged_pct': (unchanged/total*100)
+            })
+    
+    return pd.DataFrame(results)
 
 def create_indexes(conn):
     """Create indexes to speed up queries."""

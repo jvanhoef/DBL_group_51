@@ -1,0 +1,17 @@
+Chi-square statistic: 2093.66
+p-value: 0.0000
+degrees of freedom: 9
+
+Expected frequencies:
+                   Not Resolved      Resolved
+topic                                        
+accessibility       1796.999867    827.000133
+booking            12916.621376   5944.378624
+communication        682.092937    313.907063
+customer_service   10704.613156   4926.386844
+delay              44116.894599  20303.105401
+flight_experience   7475.629020   3440.370980
+luggage             1499.782663    690.217337
+pricing             6461.392433   2973.607567
+refunds             4256.917368   1959.082632
+safety              2729.056581   1255.943419
