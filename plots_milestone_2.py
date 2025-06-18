@@ -1,9 +1,11 @@
 import matplotlib.pyplot as plt
 from db_repository import (
     get_connection,
+    get_airline_id,
     get_conversation_improvement_counts,
     get_last_user_sentiment_counts,
-    get_response_time_buckets
+    get_response_time_buckets,
+    get_issue_type_count
 )
 from demo_util import save_plot
 
@@ -61,7 +63,8 @@ def plot_conversation_donuts():
     save_plot(fig, "conversation_outcomes")
 
 def plot_response_time_donut():
-    response_time_counts = get_response_time_buckets(conn)
+    airline_id = get_airline_id(conn, 'AmericanAir')
+    response_time_counts = get_response_time_buckets(conn, airline_id)
 
     # Ensure all categories are present and in order
     bucket_order = ['Within 30 min', '30-60 min', '60-120 min', 'Above 120 min', 'Unknown']
@@ -79,9 +82,28 @@ def plot_response_time_donut():
     )
     centre_circle = plt.Circle((0, 0), 0.70, fc='white')
     ax.add_artist(centre_circle)
-    ax.set_title("Average Response Time Distribution")
+    ax.set_title("First Response Time Distribution")
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     save_plot(fig, "response_time_donut")
 
-# Call this function to generate the donut chart
+def plot_issue_type_counts():
+    airline_id = get_airline_id(conn, 'AmericanAir')
+
+    rows = get_issue_type_count(conn, airline_id)
+    
+    issue_types = [row[0] for row in rows]
+    counts = [row[1] for row in rows]
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    bars = ax.bar(issue_types, counts, color='#3498db', edgecolor='#2980b9')
+    ax.set_xlabel('Issue Type')
+    ax.set_ylabel('Number of Issues')
+    ax.set_title('Detected Issues by Type')
+    ax.bar_label(bars, padding=3)
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    from demo_util import save_plot
+    save_plot(fig, "issue_type_counts")
+
+# Call the function to generate and save the plot
 plot_response_time_donut()

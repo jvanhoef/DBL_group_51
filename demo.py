@@ -12,9 +12,11 @@ from plots_milestone_1 import (
 )
 from plots_milestone_2 import (
     plot_conversation_donuts,
-    plot_response_time_donut
+    plot_response_time_donut,
+    plot_issue_type_counts
 )
-
+from activity_correlation import plot_activity_correlation
+from plot_poster import plot_american_airlines_sentiment_sankey
 
 # Configure matplotlib and seaborn for better plots
 plt.style.use('seaborn-v0_8-whitegrid')
@@ -33,6 +35,11 @@ def plot_milestone_2():
     print("Generating: Milestone 2: Conversation Outcomes")
     plot_conversation_donuts()
     plot_response_time_donut()
+    plot_issue_type_counts()
+    plot_activity_correlation()
+    
+def plot_poster():
+    plot_american_airlines_sentiment_sankey()
     
 def plot_issue_type_counts():
     """Bar chart showing counts of different issue types"""

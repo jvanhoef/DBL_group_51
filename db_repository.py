@@ -2,11 +2,11 @@ import pyodbc
 import pandas as pd
 
 
-start_date = ""
-end_date = ""
+# start_date = ""
+# end_date = ""
 
-# start_date = '2019-05-22 12:20:00.000'
-# end_date = '2019-07-22 12:20:00.000'
+start_date = '2019-05-22 12:20:00.000'
+end_date = '2019-07-22 12:20:00.000'
 
 def get_connection():
     server = 'S20203142'
@@ -141,7 +141,7 @@ def get_language_counts(conn):
         SELECT TOP 10 language, COUNT(*) as count
         FROM tweet
     """
-    
+      
     params = []
     if start_date and end_date:
         query += " WHERE created_at BETWEEN ? AND ?"
@@ -233,28 +233,113 @@ def get_last_user_sentiment_counts(conn):
     cursor.execute(query, params)
     return cursor.fetchall()
 
-def get_response_time_buckets(conn):
+def get_response_time_buckets(conn, airline_id):
     cursor = conn.cursor()
     query = """
         SELECT
             CASE
-                WHEN avg_response_time_sec < 1800 THEN 'Within 30 min'
-                WHEN avg_response_time_sec >= 1800 AND avg_response_time_sec < 3600 THEN '30-60 min'
-                WHEN avg_response_time_sec >= 3600 AND avg_response_time_sec < 7200 THEN '60-120 min'
-                WHEN avg_response_time_sec >= 7200 THEN 'Above 120 min'
+                WHEN first_response_time_sec < 1800 THEN 'Within 30 min'
+                WHEN first_response_time_sec >= 1800 AND first_response_time_sec < 3600 THEN '30-60 min'
+                WHEN first_response_time_sec >= 3600 AND first_response_time_sec < 7200 THEN '60-120 min'
+                WHEN first_response_time_sec >= 7200 THEN 'Above 120 min'
             END as response_time_bucket,
             COUNT(*) as count
         FROM conversation_sentiment cs
         JOIN conversation c ON cs.conversation_id = c.id
         JOIN tweet t ON c.root_tweet_id = t.id
+        WHERE c.airline_id = ?
+    """
+    params = [airline_id]
+    if start_date and end_date:
+        query += " AND t.created_at BETWEEN ? AND ?"
+        params = [airline_id, start_date, end_date]
+    query += " GROUP BY CASE WHEN first_response_time_sec < 1800 THEN 'Within 30 min' WHEN first_response_time_sec >= 1800 AND first_response_time_sec < 3600 THEN '30-60 min' WHEN first_response_time_sec >= 3600 AND first_response_time_sec < 7200 THEN '60-120 min' WHEN first_response_time_sec >= 7200 THEN 'Above 120 min' END"
+    cursor.execute(query, params)
+    return cursor.fetchall()
+
+def get_issue_type_count(conn, airline_id):
+    cursor = conn.cursor()
+    query = """
+        SELECT issue_type, COUNT(*) as issue_count
+        FROM detected_issues d
+        JOIN conversation c ON d.conversation_id = c.id
+        JOIN tweet t ON c.root_tweet_id = t.id
+        WHERE c.airline_id = ?
     """
     params = []
     if start_date and end_date:
-        query += " WHERE t.created_at BETWEEN ? AND ?"
-        params = [start_date, end_date]
-    query += " GROUP BY CASE WHEN avg_response_time_sec < 1800 THEN 'Within 30 min' WHEN avg_response_time_sec >= 1800 AND avg_response_time_sec < 3600 THEN '30-60 min' WHEN avg_response_time_sec >= 3600 AND avg_response_time_sec < 7200 THEN '60-120 min' WHEN avg_response_time_sec >= 7200 THEN 'Above 120 min' END"
-    cursor.execute(query, params)
+        query += " AND created_at BETWEEN ? AND ?"
+        params = [airline_id, start_date, end_date]
+    query += " GROUP BY issue_type ORDER BY issue_count DESC"
+    if params:
+        cursor.execute(query, params)
+    else:
+        cursor.execute(query, (airline_id))
     return cursor.fetchall()
+    
+def get_activity_correlation(conn, start_date=None, end_date=None):
+    """
+    Returns a DataFrame with: hour_of_day, user_tweets, airline_tweets
+    Optionally filters by tweet.created_at between start_date and end_date.
+    """
+    params = []
+    where_clause = ""
+    if start_date and end_date:
+        where_clause = "WHERE t.created_at BETWEEN ? AND ?"
+        params = [start_date, end_date]
+    elif start_date:
+        where_clause = "WHERE t.created_at >= ?"
+        params = [start_date]
+    elif end_date:
+        where_clause = "WHERE t.created_at <= ?"
+        params = [end_date]
+
+    query = f"""
+        WITH HourlyActivity AS (
+            SELECT 
+                DATEPART(HOUR, t.created_at) as hour_of_day,
+                ts.is_airline_tweet,
+                COUNT(*) as tweet_count
+            FROM tweet t
+            JOIN tweet_sentiment ts ON t.id = ts.tweet_id
+            {where_clause}
+            GROUP BY DATEPART(HOUR, t.created_at), ts.is_airline_tweet
+        )
+        SELECT 
+            COALESCE(h1.hour_of_day, h2.hour_of_day) as hour_of_day,
+            COALESCE(h1.tweet_count, 0) as user_tweets,
+            COALESCE(h2.tweet_count, 0) as airline_tweets
+        FROM 
+            (SELECT hour_of_day, tweet_count FROM HourlyActivity WHERE is_airline_tweet = 0) h1
+            FULL OUTER JOIN 
+            (SELECT hour_of_day, tweet_count FROM HourlyActivity WHERE is_airline_tweet = 1) h2
+            ON h1.hour_of_day = h2.hour_of_day
+        ORDER BY hour_of_day
+    """
+
+    df = pd.read_sql(query, conn, params=params)
+    return df
+
+#poster getters
+def get_american_air_sentiment_flow(conn):
+    """
+    Returns a DataFrame with initial and final sentiment for American Airlines conversations.
+    """
+    query = """
+    SELECT 
+        cs.initial_sentiment,
+        cs.final_sentiment,
+        u.screen_name as airline_name
+    FROM conversation_sentiment cs
+    JOIN conversation c ON cs.conversation_id = c.id
+    JOIN [user] u ON c.airline_id = u.id
+    WHERE u.screen_name = 'AmericanAir'
+    AND cs.initial_sentiment IS NOT NULL 
+    AND cs.final_sentiment IS NOT NULL
+    """
+    import pandas as pd
+    df = pd.read_sql(query, conn)
+    return df
 
 def get_conversations_with_tweets_and_sentiment():
     conn = get_connection()
