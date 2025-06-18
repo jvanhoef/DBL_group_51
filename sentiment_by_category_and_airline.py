@@ -76,8 +76,7 @@ def get_sentiment_data(issue_types, selected_airlines=None):
                     'airline': airline,
                     'issue_type': issue_type,
                     'total_issues': total,
-                    'improved_count': improved,
-                    'worsened_count': worsened,
+                    'improved_count': improved,                    'worsened_count': worsened,
                     'unchanged_count': unchanged,
                     'improved_pct': (improved/total*100),
                     'worsened_pct': (worsened/total*100),
@@ -85,7 +84,6 @@ def get_sentiment_data(issue_types, selected_airlines=None):
                 })
     
     return pd.DataFrame(results)
-from db_repository import get_available_categories, get_available_airlines, get_sentiment_data
 
 def plot_sentiment_data(df, selected_categories):
     """Create and save the visualization with multiple categories"""
@@ -93,7 +91,7 @@ def plot_sentiment_data(df, selected_categories):
       # Calculate bar positions
     n_categories = len(selected_categories)
     n_airlines = len(df['airline'].unique())
-    bar_width = 0.35  # Make bars wider
+    bar_width = 0.6  # Make bars wider
     category_spacing = 3  # Increase space between category groups
     
     # Create array for category positions (these will be the centers of each group)
@@ -179,7 +177,7 @@ def plot_sentiment_data(df, selected_categories):
     # Customize plot
     plt.xlabel('')  # Remove x-label since we have category labels
     plt.ylabel('Percentage of Issues')
-    plt.title('Sentiment Changes by Category and Airline', pad=20)
+    plt.title('Sentiment Changes by Category and Airline', pad=15)
     
     # Remove x-ticks since we have custom labels
     plt.xticks([])
