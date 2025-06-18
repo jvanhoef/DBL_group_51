@@ -1,324 +1,211 @@
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from tqdm import tqdm
-from scipy.stats import chi2_contingency, kruskal, mannwhitneyu
-import statsmodels.api as sm
-from statsmodels.formula.api import ols
-from statsmodels.stats.multicomp import pairwise_tukeyhsd
-from itertools import combinations
-from db_repository import get_conversations_with_tweets_and_sentiment
-
-tqdm.pandas()
-
-def load_data():
-    """Load data from database and perform initial processing"""
-    df = get_conversations_with_tweets_and_sentiment()
-    df = df.rename(columns={"issue_type": "topic"})  # for clarity
-    
-    # Calculate sentiment change per conversation (assuming sentiment values are available)
-    # Modify this according to your actual sentiment data structure
-    if 'sentiment' in df.columns:
-        # Group by conversation and calculate initial and final sentiment
-        sentiment_change = df.groupby('conversation_id').agg({
-            'sentiment': ['first', 'last']
-        })
-        sentiment_change.columns = ['initial_sentiment', 'final_sentiment']
-        sentiment_change['sentiment_change'] = sentiment_change['final_sentiment'] - sentiment_change['initial_sentiment']
-        
-        # Merge back to conversation-level dataframe
-        df_conv = (
-            df.groupby("conversation_id")
-            .agg({
-                "airline": "first",
-                "topic": "first",
-                "resolved_in_conversation": "first"
-            })
-        )
-        df_conv = df_conv.join(sentiment_change['sentiment_change'])
-    else:
-        # If sentiment isn't available, create conversation-level dataframe without sentiment change
-        df_conv = (
-            df.groupby("conversation_id")
-            .agg({
-                "airline": "first",
-                "topic": "first",
-                "resolved_in_conversation": "first"
-            })
-        )
-    
-    return df, df_conv
-
-def basic_statistical_analysis(df_conv):
-    """Perform the original basic statistical analysis"""
-    # Prepare data for plots
-    topic_counts = df_conv['topic'].value_counts().sort_values(ascending=False)
-    resolution_rate = df_conv.groupby('topic')['resolved_in_conversation'].mean().sort_values(ascending=False)
-    airline_resolution = df_conv.groupby('airline')['resolved_in_conversation'].mean().sort_values(ascending=False)
-    contingency = pd.crosstab(df_conv['topic'], df_conv['resolved_in_conversation'])
-    contingency.columns = ['Not Resolved', 'Resolved']
-
-    # Chi-Square Test for Independence
-    chi2, p, dof, expected = chi2_contingency(contingency)
-    print(f"Chi-square test: chi2={chi2:.4f}, p-value={p:.4f}, dof={dof}")
-
-    # Combined plot
-    fig, axes = plt.subplots(2, 2, figsize=(18, 12))
-
-    # Top left: Number of conversations per topic
-    sns.barplot(x=topic_counts.index, y=topic_counts.values, palette='viridis', ax=axes[0,0])
-    axes[0,0].set_title('Number of Conversations per Topic')
-    axes[0,0].set_ylabel('Number of Conversations')
-    axes[0,0].set_xlabel('Topic')
-    axes[0,0].tick_params(axis='x', rotation=45)
-
-    # Top right: Resolution rate per topic
-    sns.barplot(x=resolution_rate.index, y=resolution_rate.values, palette='mako', ax=axes[0,1])
-    axes[0,1].set_title('Resolution Rate per Topic')
-    axes[0,1].set_ylabel('Resolution Rate')
-    axes[0,1].set_xlabel('Topic')
-    axes[0,1].set_ylim(0,1)
-    axes[0,1].tick_params(axis='x', rotation=45)
-
-    # Bottom left: Overall resolution rate per airline
-    sns.barplot(x=airline_resolution.index, y=airline_resolution.values, palette='crest', ax=axes[1,0])
-    axes[1,0].set_title('Overall Resolution Rate per Airline')
-    axes[1,0].set_ylabel('Resolution Rate')
-    axes[1,0].set_xlabel('Airline')
-    axes[1,0].set_ylim(0,1)
-    axes[1,0].tick_params(axis='x', rotation=45)
-
-    # Bottom right: Heatmap of topic vs. resolution status
-    sns.heatmap(contingency, annot=True, fmt='d', cmap='Blues', ax=axes[1,1])
-    axes[1,1].set_title("Topic vs. Resolution Status")
-    axes[1,1].set_ylabel("Topic")
-    axes[1,1].set_xlabel("Resolution Status")
-
-    plt.tight_layout()
-    plt.savefig("combined_statistical_overview.png")
-    plt.show()
-
-def within_airline_topic_comparison(df_conv, airline_name):
+from scipy import stats
+def run_consolidated_sentiment_analysis():
     """
-    Analyze sentiment change differences between topics for a specific airline
-    
-    Parameters:
-    df_conv (DataFrame): Conversation-level dataframe
-    airline_name (str): Name of the airline to analyze
+    Run t-tests for all categories and display results in a single consolidated view
     """
-    if 'sentiment_change' not in df_conv.columns:
-        print("Error: Sentiment change data not available")
-        return
-        
-    # Filter for the specific airline
-    df_airline = df_conv[df_conv['airline'] == airline_name].copy()
+    from db_repository import get_available_categories, get_connection
     
-    if len(df_airline) == 0:
-        print(f"No data found for airline: {airline_name}")
-        return
-        
-    print(f"\n--- Topic Analysis for {airline_name} ---")
+    # Get all available categories
+    categories = get_available_categories()
+    print(f"Running t-tests for {len(categories)} categories")
     
-    # ANOVA analysis
-    try:
-        model = ols('sentiment_change ~ C(topic)', data=df_airline).fit()
-        anova_table = sm.stats.anova_lm(model, typ=2)
-        print("\nANOVA Results for Topic Comparison:")
-        print(anova_table)
-        
-        # If ANOVA is significant, run post-hoc tests
-        if anova_table['PR(>F)'][0] < 0.05:
-            tukey = pairwise_tukeyhsd(df_airline['sentiment_change'], 
-                                    df_airline['topic'], 
-                                    alpha=0.05)
-            print("\nTukey HSD Post-hoc Test:")
-            print(tukey)
-    except Exception as e:
-        print(f"Error running ANOVA: {str(e)}")
-        
-    # Non-parametric alternative: Kruskal-Wallis Test
-    topics = df_airline['topic'].unique()
-    if len(topics) < 2:
-        print("Not enough topics for comparison")
-        return
-        
-    print("\nKruskal-Wallis Test (Non-parametric alternative to ANOVA):")
-    try:
-        samples = [df_airline[df_airline['topic']==topic]['sentiment_change'] for topic in topics]
-        # Filter out empty samples
-        samples = [s for s in samples if len(s) > 0]
-        
-        if len(samples) < 2:
-            print("Not enough topics with data for Kruskal-Wallis test")
-        else:
-            kruskal_stat, kruskal_p = kruskal(*samples)
-            print(f"Statistic={kruskal_stat:.4f}, p-value={kruskal_p:.4f}")
-            
-            # If significant, run Mann-Whitney U tests with Bonferroni correction
-            if kruskal_p < 0.05:
-                print("\nRunning pairwise Mann-Whitney U tests:")
-                topic_pairs = list(combinations(topics, 2))
-                alpha = 0.05 / len(topic_pairs)  # Bonferroni correction
-                
-                for t1, t2 in topic_pairs:
-                    sample1 = df_airline[df_airline['topic']==t1]['sentiment_change']
-                    sample2 = df_airline[df_airline['topic']==t2]['sentiment_change']
-                    if len(sample1) > 0 and len(sample2) > 0:
-                        u_stat, p_val = mannwhitneyu(sample1, sample2, alternative='two-sided')
-                        print(f"{t1} vs {t2}: U={u_stat:.4f}, p={p_val:.4f}, significant: {p_val < alpha}")
-    except Exception as e:
-        print(f"Error running Kruskal-Wallis test: {str(e)}")
+    # Create results container
+    results = []
     
-    # Visualize with boxplots
-    plt.figure(figsize=(14, 7))
-    sns.boxplot(x='topic', y='sentiment_change', hue='resolved_in_conversation', data=df_airline)
-    plt.title(f'Sentiment Change by Topic for {airline_name}')
-    plt.xlabel('Conversation Topic')
-    plt.ylabel('Sentiment Change')
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    plt.savefig(f"{airline_name}_sentiment_by_topic.png")
-    plt.show()
-
-def cross_airline_topic_comparison(df_conv):
-    """
-    Compare how topics affect sentiment change across different airlines
-    
-    Parameters:
-    df_conv (DataFrame): Conversation-level dataframe
-    """
-    if 'sentiment_change' not in df_conv.columns:
-        print("Error: Sentiment change data not available")
-        return
+    # Process each category
+    for category in categories:
+        print(f"Analyzing category: {category}")
         
-    print("\n--- Cross-Airline Topic Comparison ---")
-    
-    # Two-way ANOVA: Airline x Topic
-    try:
-        model = ols('sentiment_change ~ C(airline) + C(topic) + C(airline):C(topic)', data=df_conv).fit()
-        anova_table = sm.stats.anova_lm(model, typ=2)
-        print("\nTwo-way ANOVA Results:")
-        print(anova_table)
-    except Exception as e:
-        print(f"Error running two-way ANOVA: {str(e)}")
+        # Get data from database
+        conn = get_connection()
+        query = f"""
+        SELECT 
+            u.screen_name AS airline,
+            cs.final_sentiment
+        FROM detected_issues di
+        JOIN conversation c ON di.conversation_id = c.id
+        JOIN [user] u ON c.airline_id = u.id
+        JOIN conversation_sentiment cs ON c.id = cs.conversation_id
+        WHERE di.issue_type = '{category}'
+        AND u.screen_name IN ('AmericanAir', 'British_Airways')
+        AND cs.final_sentiment IS NOT NULL
+        """
         
-    # Visualize with interaction plot
-    plt.figure(figsize=(14, 8))
-    for airline in df_conv['airline'].unique():
-        airline_data = df_conv[df_conv['airline'] == airline]
-        if len(airline_data) > 0:
-            means = airline_data.groupby('topic')['sentiment_change'].mean()
-            plt.plot(means.index, means.values, marker='o', label=airline)
-
-    plt.title('Average Sentiment Change by Topic Across Airlines')
-    plt.xlabel('Conversation Topic')
-    plt.ylabel('Mean Sentiment Change')
-    plt.legend()
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    plt.savefig("cross_airline_sentiment_comparison.png")
-    plt.show()
-    
-    # Topic-Specific Airline Comparisons
-    print("\n--- Topic-Specific Airline Comparisons ---")
-    for topic in df_conv['topic'].unique():
-        topic_data = df_conv[df_conv['topic'] == topic]
+        df = pd.read_sql(query, conn)
         
-        if len(topic_data) < 10:  # Skip topics with very little data
+        if len(df) == 0:
+            print(f"No data found for category: {category}")
             continue
             
-        try:
-            # ANOVA for this specific topic across airlines
-            model = ols('sentiment_change ~ C(airline)', data=topic_data).fit()
-            anova_result = sm.stats.anova_lm(model, typ=2)
-            
-            print(f"\nTopic: {topic}")
-            print(f"ANOVA result: F={anova_result['F'][0]:.4f}, p-value={anova_result['PR(>F)'][0]:.4f}")
-            
-            # If significant, run post-hoc tests
-            if anova_result['PR(>F)'][0] < 0.05:
-                tukey = pairwise_tukeyhsd(topic_data['sentiment_change'], 
-                                         topic_data['airline'], 
-                                         alpha=0.05)
-                print(tukey)
-        except Exception as e:
-            print(f"Error analyzing topic {topic}: {str(e)}")
-
-def resolution_status_analysis(df_conv):
-    """
-    Analyze how topics affect resolution status
+        # Separate the data for each airline
+        ba_data = df[df['airline'] == 'British_Airways']['final_sentiment']
+        aa_data = df[df['airline'] == 'AmericanAir']['final_sentiment']
+        
+        # Skip if either airline doesn't have enough data
+        if len(ba_data) < 2 or len(aa_data) < 2:
+            print(f"Not enough samples for category: {category}")
+            continue
+        
+        # Perform t-test
+        t_stat, p_value = stats.ttest_ind(ba_data, aa_data, equal_var=False)
+        
+        # Calculate means and confidence intervals
+        ba_mean = ba_data.mean()
+        aa_mean = aa_data.mean()
+        difference = ba_mean - aa_mean
+        
+        # Calculate 95% confidence interval for the difference
+        # Using pooled standard error formula for Welch's t-test
+        ba_var = ba_data.var()
+        aa_var = aa_data.var()
+        se = np.sqrt(ba_var/len(ba_data) + aa_var/len(aa_data))
+        ci_95 = 1.96 * se  # Approximate 95% CI
+        
+        results.append({
+            'category': category,
+            'ba_count': len(ba_data),
+            'aa_count': len(aa_data),
+            'ba_mean': ba_mean,
+            'aa_mean': aa_mean,
+            'difference': difference,
+            'ci_95': ci_95,
+            'p_value': p_value,
+            'significant': p_value < 0.05
+        })
     
-    Parameters:
-    df_conv (DataFrame): Conversation-level dataframe
-    """
-    print("\n--- Resolution Status Analysis by Topic ---")
+    # Create DataFrame with results
+    results_df = pd.DataFrame(results)
     
-    # Create contingency table
-    contingency = pd.crosstab(df_conv['topic'], df_conv['resolved_in_conversation'])
-    print("\nContingency table:")
-    print(contingency)
+    if len(results_df) == 0:
+        print("No valid results found!")
+        return
     
-    # Chi-square test
-    chi2, p, dof, expected = chi2_contingency(contingency)
-    print(f"\nChi-square test for association between topic and resolution status:")
-    print(f"Chi2={chi2:.4f}, p-value={p:.4f}, dof={dof}")
+    # Sort by absolute difference (to highlight largest effects)
+    results_df = results_df.sort_values('p_value')
     
-    # Visualize with stacked bar chart
-    plt.figure(figsize=(14, 7))
-    contingency_pct = contingency.div(contingency.sum(axis=1), axis=0) * 100
-    contingency_pct.plot(kind='bar', stacked=True)
-    plt.title('Resolution Rate by Topic')
-    plt.xlabel('Topic')
-    plt.ylabel('Percentage')
-    plt.legend(title='Resolved')
+    # Save results to CSV
+    os.makedirs("plots", exist_ok=True)
+    results_df.to_csv("plots/all_sentiment_ttest_results.csv", index=False)
+    
+    # Create consolidated visualization
+    plt.figure(figsize=(14, max(8, len(results_df)*0.5)))
+    
+    # Create a forest plot showing differences with confidence intervals
+    y_pos = np.arange(len(results_df))
+    
+    # Plot the difference line at zero (no difference)
+    plt.axvline(x=0, color='gray', linestyle='--', alpha=0.7)
+    
+    # Plot differences as points with confidence intervals
+    for i, (_, row) in enumerate(results_df.iterrows()):
+        color = 'red' if row['significant'] else 'blue'
+        marker = 'o' if row['significant'] else 'o'
+        
+        plt.plot([row['difference']], [i], marker=marker, markersize=10, 
+                 color=color, alpha=0.8)
+        plt.plot([row['difference'] - row['ci_95'], 
+                  row['difference'] + row['ci_95']], [i, i], 
+                 color=color, linewidth=2, alpha=0.8)
+    
+    # Add category names and p-values
+    categories = []
+    for i, (_, row) in enumerate(results_df.iterrows()):
+        sig_symbol = "**" if row['significant'] else ""
+        p_format = f"{row['p_value']:.4f}" if row['p_value'] >= 0.0001 else "<0.0001"
+        sample_info = f"BA: {row['ba_count']}, AA: {row['aa_count']}"
+        categories.append(f"{row['category']} {sig_symbol}\np={p_format}, {sample_info}")
+    
+    plt.yticks(y_pos, categories)
+    
+    # Add means to the right of the plot
+    for i, (_, row) in enumerate(results_df.iterrows()):
+        plt.text(plt.xlim()[1]*0.85, i, f"BA: {row['ba_mean']:.3f}\nAA: {row['aa_mean']:.3f}", 
+                 va='center', ha='left', fontsize=9,
+                 bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.2'))
+    
+    # Style the plot
+    plt.title('Sentiment Differences Between British Airways and American Airlines\nBy Issue Category', fontsize=14)
+    plt.xlabel('Difference in Final Sentiment (BA - AA)', fontsize=12)
+    plt.grid(axis='x', linestyle='--', alpha=0.3)
+    
+    # Add legend
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], marker='o', color='red', label='Significant (p<0.05)', 
+               markersize=10, linestyle=''),
+        Line2D([0], [0], marker='o', color='blue', label='Not Significant', 
+               markersize=10, linestyle='')
+    ]
+    plt.legend(handles=legend_elements, loc='lower right')
+    
+    # Create a heatmap showing sentiment by airline and category
+    plt.figure(figsize=(16, 10))
+    
+    # Reshape data for heatmap
+    heatmap_data = []
+    for _, row in results_df.iterrows():
+        heatmap_data.append({
+            'category': row['category'],
+            'airline': 'British Airways',
+            'mean_sentiment': row['ba_mean']
+        })
+        heatmap_data.append({
+            'category': row['category'],
+            'airline': 'American Air',
+            'mean_sentiment': row['aa_mean']
+        })
+    
+    heatmap_df = pd.DataFrame(heatmap_data)
+    heatmap_pivot = heatmap_df.pivot(index='category', columns='airline', values='mean_sentiment')
+    
+    # Create heatmap
+    ax = sns.heatmap(heatmap_pivot, annot=True, cmap='RdBu_r', center=0, 
+                     fmt='.3f', linewidths=.5, cbar_kws={'label': 'Mean Sentiment'})
+    
+    # Mark significant differences with asterisks
+    for i, category in enumerate(heatmap_pivot.index):
+        row = results_df[results_df['category'] == category]
+        if len(row) > 0 and row.iloc[0]['significant']:
+            plt.text(0.5, i+0.5, '*', fontsize=20, ha='center', va='center', color='black')
+    
+    plt.title('Mean Final Sentiment by Airline and Issue Category', fontsize=14)
     plt.tight_layout()
-    plt.savefig("topic_resolution_rate.png")
+    
+    # Save plots
+    plt.savefig("plots/consolidated_sentiment_analysis.png", dpi=300, bbox_inches='tight')
+    
     plt.show()
     
-    # Check if airline-specific analysis is possible
-    if len(df_conv['airline'].unique()) > 1:
-        print("\nComparing resolution rates by topic across airlines:")
-        for airline in df_conv['airline'].unique():
-            airline_data = df_conv[df_conv['airline'] == airline]
-            print(f"\n{airline}:")
-            resolution_by_topic = airline_data.groupby('topic')['resolved_in_conversation'].mean()
-            print(resolution_by_topic)
+    # Print summary of findings
+    sig_count = results_df['significant'].sum()
+    print(f"\nAnalysis complete. Found {sig_count} categories with significant differences.")
+    if sig_count > 0:
+        print("\nCategories with significant differences:")
+        sig_df = results_df[results_df['significant']]
+        for _, row in sig_df.iterrows():
+            better = "British Airways" if row['difference'] > 0 else "American Airlines"
+            print(f"- {row['category']}: {better} has significantly better sentiment (p={row['p_value']:.4f})")
 
-def main():
-    """Main function to run the analysis"""
-    print("Loading data...")
-    df, df_conv = load_data()
-    
-    print("\nChoose an analysis to run:")
-    print("1. Basic Statistical Analysis")
-    print("2. Within-Airline Topic Comparison")
-    print("3. Cross-Airline Topic Comparison")
-    print("4. Resolution Status Analysis")
-    print("5. Run All Analyses")
-    
-    choice = input("Enter your choice (1-5): ")
-    
-    if choice == '1':
-        basic_statistical_analysis(df_conv)
-    elif choice == '2':
-        airline = input("Enter airline name to analyze: ")
-        within_airline_topic_comparison(df_conv, airline)
-    elif choice == '3':
-        cross_airline_topic_comparison(df_conv)
-    elif choice == '4':
-        resolution_status_analysis(df_conv)
-    elif choice == '5':
-        basic_statistical_analysis(df_conv)
-        
-        # Run within-airline analysis for each airline
-        for airline in df_conv['airline'].unique():
-            within_airline_topic_comparison(df_conv, airline)
-            
-        cross_airline_topic_comparison(df_conv)
-        resolution_status_analysis(df_conv)
-    else:
-        print("Invalid choice. Please run again and select a valid option.")
+    return results_df
 
+# Use this as the main function
 if __name__ == "__main__":
-    main()
+    import os
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    
+    # Configure plot style
+    plt.style.use('seaborn-v0_8-whitegrid')
+    sns.set_context("paper", font_scale=1.2)
+    
+    # Create output directory if it doesn't exist
+    os.makedirs("plots", exist_ok=True)
+    
+    print("Running consolidated sentiment analysis for all categories...")
+    
+    # Run consolidated analysis
+    run_consolidated_sentiment_analysis()
+    
+    print("Analysis complete. Results saved to 'plots' directory.")

@@ -1,6 +1,9 @@
 import pyodbc
 import pandas as pd
 
+start_date = '2019-05-22 12:20:00.000'
+end_date = '2019-07-22 12:20:00.000'
+
 def get_connection():
     server = 'S20203142'
     database = 'airline_tweets'
@@ -10,33 +13,6 @@ def get_connection():
     )
     return pyodbc.connect(connection_string)
 
-#Function to truncate(empty tables
-def delete_tables(tables):
-    conn = get_connection()
-    cursor = conn.cursor()
-    """
-    Delete all rows from the specified tables while respecting foreign key constraints.
-    """
-    for table in tables:
-        try:
-            cursor.execute(f"DELETE FROM dbo.[{table}]")
-            print(f"Table '{table}' cleared successfully.")
-        except pyodbc.Error as e:
-            print(f"Error clearing table '{table}': {e}")
-            
-            #Function to truncate(empty tables
-def truncate_tables(tables):
-    conn = get_connection()
-    cursor = conn.cursor()
-    """
-    Delete all rows from the specified tables while respecting foreign key constraints.
-    """
-    for table in tables:
-        try:
-            cursor.execute(f"Truncate table dbo.[{table}]")
-            print(f"Table '{table}' cleared successfully.")
-        except pyodbc.Error as e:
-            print(f"Error clearing table '{table}': {e}")
 
 #getters
 def get_issue_counts():
@@ -72,6 +48,68 @@ def get_screen_name_by_id(conn, user_id):
     """, (user_id,))
     row = cursor.fetchone()
     return row[0] if row else None
+
+#Milestone 1
+def get_tweet_count(conn):
+    cursor = conn.cursor()
+    query = """SELECT COUNT(DISTINCT id) FROM tweet"""
+    params = []
+    if start_date and end_date:
+        query += " WHERE created_at BETWEEN ? AND ?"
+        params = [start_date, end_date]
+    elif start_date:
+        query += " WHERE created_at >= ?"
+        params = [start_date]
+    elif end_date:
+        query += " WHERE created_at <= ?"
+        params = [end_date]
+    cursor.execute(query, params)
+
+    return cursor.fetchone()[0] or 0
+
+def get_tweet_size(conn):
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT SUM(size) * 8.0 / 1024 / 1024 
+        FROM sys.master_files 
+        WHERE database_id = DB_ID('airline_tweets')
+    """)
+    return cursor.fetchone()[0] or 0
+
+def get_airline_mentions(conn, airline_id):
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM mention WHERE name = 'AmericanAir'")
+    return cursor.fetchone()[0] or 0
+
+def get_conversation_count_by_airline(conn, airline_id):
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM conversation WHERE airline_id = ?", airline_id)
+    return cursor.fetchone()[0] or 0
+
+def get_tweet_volume_over_time(conn):
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT 
+            CAST(created_at AS DATE) AS date,
+            COUNT(*) AS tweet_count
+        FROM tweet
+        GROUP BY CAST(created_at AS DATE)
+        ORDER BY date
+    """)
+    columns = [col[0] for col in cursor.description]
+    rows = cursor.fetchall()
+    return pd.DataFrame.from_records(rows, columns=columns)
+
+def get_language_counts(conn):
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT TOP 10 language, COUNT(*) as count
+        FROM tweet
+        GROUP BY language
+        ORDER BY count DESC
+    """)
+    
+    return cursor.fetchall()
 
 def get_relevant_tweets(conn, airline_id):
     cursor = conn.cursor()
@@ -257,4 +295,3 @@ def print_conversation_nicely(conversation_id, airline_id):
 
     print("--- Conversation End ---")
     
-print_conversation_nicely(145414, 5920532)

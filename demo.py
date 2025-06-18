@@ -2,42 +2,23 @@ import os
 import inspect
 import matplotlib.pyplot as plt
 import seaborn as sns
-import pandas as pd
 from datetime import datetime
+from demo_util import save_plot
 from db_repository import get_issue_counts
+from plots_presentation_1 import plot_effect_on_data, plot_top_10_languages, plot_conversation_count_per_airline
 
 # Configure matplotlib and seaborn for better plots
 plt.style.use('seaborn-v0_8-whitegrid')
 sns.set_context("paper", font_scale=1.2)
 
-# Constants
-OUTPUT_DIR = "plots"  # Output directory for all plots
-
-def create_output_directory():
-    """Create the output directory if it doesn't exist"""
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    print(f"Output directory: {os.path.abspath(OUTPUT_DIR)}")
-
-def save_plot(fig, filename):
-    """Save the given figure to the output directory"""
-    # Create output directory if it doesn't exist
-    create_output_directory()
-    
-    # Ensure filename has the correct extension
-    if not filename.endswith(".png"):
-        filename = f"{filename}.png"
-    
-    # Create the full path
-    filepath = os.path.join(OUTPUT_DIR, filename)
-    
-    # Save the figure
-    fig.savefig(filepath, dpi=300, bbox_inches='tight', facecolor='white')
-    print(f"Saved: {filepath}")
-    
-    return filepath
-
 # ===== PLOTTING FUNCTIONS =====
-
+#milestone 1 - Data Overview
+def plot_milestone_1():
+    print("Generating: Milestone 1: Data Overview")
+    plot_effect_on_data()
+    plot_top_10_languages()
+    plot_conversation_count_per_airline()
+    
 def plot_issue_type_counts():
     """Bar chart showing counts of different issue types"""
     print("Generating: Issue Type Distribution")
@@ -110,7 +91,6 @@ def get_all_plotting_functions():
 def main():
     """Run all plotting functions and save the results"""
     print("Starting plot generation...")
-    create_output_directory()
     
     # Get all plotting functions
     plot_functions = get_all_plotting_functions()
