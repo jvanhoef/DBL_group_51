@@ -1,11 +1,20 @@
-import os
 import inspect
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
 from demo_util import save_plot
 from db_repository import get_issue_counts
-from plots_presentation_1 import plot_effect_on_data, plot_top_10_languages, plot_conversation_count_per_airline
+from plots_milestone_1 import (
+    plot_effect_on_data,
+    plot_top_10_languages,
+    plot_conversation_count_per_airline,
+    plot_tweet_volume_over_time
+)
+from plots_milestone_2 import (
+    plot_conversation_donuts,
+    plot_response_time_donut
+)
+
 
 # Configure matplotlib and seaborn for better plots
 plt.style.use('seaborn-v0_8-whitegrid')
@@ -18,6 +27,12 @@ def plot_milestone_1():
     plot_effect_on_data()
     plot_top_10_languages()
     plot_conversation_count_per_airline()
+    plot_tweet_volume_over_time()
+    
+def plot_milestone_2():
+    print("Generating: Milestone 2: Conversation Outcomes")
+    plot_conversation_donuts()
+    plot_response_time_donut()
     
 def plot_issue_type_counts():
     """Bar chart showing counts of different issue types"""

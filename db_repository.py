@@ -1,8 +1,12 @@
 import pyodbc
 import pandas as pd
 
-start_date = '2019-05-22 12:20:00.000'
-end_date = '2019-07-22 12:20:00.000'
+
+start_date = ""
+end_date = ""
+
+# start_date = '2019-05-22 12:20:00.000'
+# end_date = '2019-07-22 12:20:00.000'
 
 def get_connection():
     server = 'S20203142'
@@ -52,18 +56,18 @@ def get_screen_name_by_id(conn, user_id):
 #Milestone 1
 def get_tweet_count(conn):
     cursor = conn.cursor()
-    query = """SELECT COUNT(DISTINCT id) FROM tweet"""
+    query = """
+        SELECT COUNT(DISTINCT id)
+        FROM tweet
+    """
     params = []
     if start_date and end_date:
         query += " WHERE created_at BETWEEN ? AND ?"
         params = [start_date, end_date]
-    elif start_date:
-        query += " WHERE created_at >= ?"
-        params = [start_date]
-    elif end_date:
-        query += " WHERE created_at <= ?"
-        params = [end_date]
-    cursor.execute(query, params)
+        cursor.execute(query, params)
+        return cursor.fetchone()[0] or 0
+    
+    cursor.execute(query)
 
     return cursor.fetchone()[0] or 0
 
@@ -78,38 +82,78 @@ def get_tweet_size(conn):
 
 def get_airline_mentions(conn, airline_id):
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM mention WHERE name = 'AmericanAir'")
+    query = """
+        SELECT COUNT(*)
+        FROM mention m
+        join tweet t on m.tweet_id = t.id
+        WHERE name = 'AmericanAir'
+    """
+    
+    params = []
+    if start_date and end_date:
+        query += " AND created_at BETWEEN ? AND ?"
+        params = [start_date, end_date]
+        cursor.execute(query, params)
+        return cursor.fetchone()[0] or 0
+    
+    cursor.execute(query)  
     return cursor.fetchone()[0] or 0
 
 def get_conversation_count_by_airline(conn, airline_id):
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM conversation WHERE airline_id = ?", airline_id)
+    query = """
+        SELECT COUNT(*)
+        FROM conversation c
+        join tweet t on c.root_tweet_id = t.id
+        WHERE airline_id = ?
+    """
+    params = []
+    if start_date and end_date:
+        query += " AND created_at BETWEEN ? AND ?"
+        params = [airline_id, start_date, end_date]
+        cursor.execute(query, params)
+        return cursor.fetchone()[0] or 0
+    
+    cursor.execute(query, (airline_id,))
     return cursor.fetchone()[0] or 0
 
 def get_tweet_volume_over_time(conn):
     cursor = conn.cursor()
-    cursor.execute("""
+    query = """
         SELECT 
             CAST(created_at AS DATE) AS date,
             COUNT(*) AS tweet_count
         FROM tweet
-        GROUP BY CAST(created_at AS DATE)
-        ORDER BY date
-    """)
+    """
+    params = []
+    if start_date and end_date:
+        query += " WHERE created_at BETWEEN ? AND ?"
+        params = [start_date, end_date]
+    query += " GROUP BY CAST(created_at AS DATE) ORDER BY date"
+    cursor.execute(query, params)
     columns = [col[0] for col in cursor.description]
     rows = cursor.fetchall()
     return pd.DataFrame.from_records(rows, columns=columns)
 
 def get_language_counts(conn):
     cursor = conn.cursor()
-    cursor.execute("""
+    query = """
         SELECT TOP 10 language, COUNT(*) as count
         FROM tweet
-        GROUP BY language
-        ORDER BY count DESC
-    """)
+    """
     
+    params = []
+    if start_date and end_date:
+        query += " WHERE created_at BETWEEN ? AND ?"
+        params = [start_date, end_date]
+        query += " GROUP BY language ORDER BY count DESC"
+        cursor.execute(query, params)
+        return cursor.fetchall()
+    
+    query += " GROUP BY language ORDER BY count DESC"
+    cursor.execute(query)
     return cursor.fetchall()
+
 
 def get_relevant_tweets(conn, airline_id):
     cursor = conn.cursor()
@@ -139,6 +183,78 @@ def get_conversation_text_by_id(conn, conversation_id):
     columns = [col[0] for col in cursor.description]
     rows = cursor.fetchall()
     return pd.DataFrame.from_records(rows, columns=columns)
+
+# Milestone 2
+def get_conversation_improvement_counts(conn, start_date=None, end_date=None):
+    cursor = conn.cursor()
+
+    query = """
+        SELECT cs.sentiment_change, COUNT(*) as count
+        FROM conversation_sentiment cs
+        JOIN conversation c ON cs.conversation_id = c.id
+        JOIN tweet t ON c.root_tweet_id = t.id
+    """
+    params = []
+    if start_date and end_date:
+        query += " WHERE created_at BETWEEN ? AND ?"
+        query += " GROUP BY cs.sentiment_change"
+        params = [start_date, end_date]
+        cursor.execute(query, params)
+        return cursor.fetchall()
+    
+    query += " GROUP BY cs.sentiment_change"
+    cursor.execute(query, params)
+    return cursor.fetchall()
+
+def get_last_user_sentiment_counts(conn):
+    cursor = conn.cursor()
+    query = """
+        SELECT 
+            CASE 
+                WHEN cs.final_sentiment < 0 THEN 'negative'
+                WHEN cs.final_sentiment = 0 THEN 'neutral'
+                WHEN cs.final_sentiment > 0 THEN 'positive'
+                ELSE 'unknown'
+            END as sentiment_group,
+            COUNT(*) as count
+        FROM conversation_sentiment cs
+        JOIN conversation c ON cs.conversation_id = c.id
+        JOIN tweet t ON c.root_tweet_id = t.id
+    """
+    params = []
+    if start_date and end_date:
+        query += " WHERE t.created_at BETWEEN ? AND ?"
+        query += " GROUP BY CASE WHEN cs.final_sentiment < 0 THEN 'negative' WHEN cs.final_sentiment = 0 THEN 'neutral' WHEN cs.final_sentiment > 0 THEN 'positive' ELSE 'unknown' END"
+        params = [start_date, end_date]
+        cursor.execute(query, params)
+        return cursor.fetchall()
+    
+    query += " GROUP BY CASE WHEN cs.final_sentiment < 0 THEN 'negative' WHEN cs.final_sentiment = 0 THEN 'neutral' WHEN cs.final_sentiment > 0 THEN 'positive' ELSE 'unknown' END"
+    cursor.execute(query, params)
+    return cursor.fetchall()
+
+def get_response_time_buckets(conn):
+    cursor = conn.cursor()
+    query = """
+        SELECT
+            CASE
+                WHEN avg_response_time_sec < 1800 THEN 'Within 30 min'
+                WHEN avg_response_time_sec >= 1800 AND avg_response_time_sec < 3600 THEN '30-60 min'
+                WHEN avg_response_time_sec >= 3600 AND avg_response_time_sec < 7200 THEN '60-120 min'
+                WHEN avg_response_time_sec >= 7200 THEN 'Above 120 min'
+            END as response_time_bucket,
+            COUNT(*) as count
+        FROM conversation_sentiment cs
+        JOIN conversation c ON cs.conversation_id = c.id
+        JOIN tweet t ON c.root_tweet_id = t.id
+    """
+    params = []
+    if start_date and end_date:
+        query += " WHERE t.created_at BETWEEN ? AND ?"
+        params = [start_date, end_date]
+    query += " GROUP BY CASE WHEN avg_response_time_sec < 1800 THEN 'Within 30 min' WHEN avg_response_time_sec >= 1800 AND avg_response_time_sec < 3600 THEN '30-60 min' WHEN avg_response_time_sec >= 3600 AND avg_response_time_sec < 7200 THEN '60-120 min' WHEN avg_response_time_sec >= 7200 THEN 'Above 120 min' END"
+    cursor.execute(query, params)
+    return cursor.fetchall()
 
 def get_conversations_with_tweets_and_sentiment():
     conn = get_connection()

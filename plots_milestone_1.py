@@ -1,12 +1,19 @@
 import matplotlib.pyplot as plt
-from db_repository import get_connection,get_airline_id,get_tweet_count, get_tweet_size, get_airline_mentions, get_conversation_count_by_airline, get_language_counts, get_tweet_volume_over_time
+from db_repository import (
+    get_connection,get_airline_id,
+    get_tweet_count, get_tweet_size,
+    get_airline_mentions,
+    get_conversation_count_by_airline, 
+    get_language_counts,
+    get_tweet_volume_over_time
+)
 from demo_util import save_plot
 
 conn = get_connection()
 
 def plot_effect_on_data():
     # Your provided values
-    json_data = [6094135, 36.048, 812954, 94750]
+    json_data = [6094135, 36.048, 849013, 94750]
     labels = [
         "Unique tweets",
         "Data Size (GB)",
