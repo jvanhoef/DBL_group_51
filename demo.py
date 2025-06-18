@@ -13,10 +13,14 @@ from plots_milestone_1 import (
 from plots_milestone_2 import (
     plot_conversation_donuts,
     plot_response_time_donut,
-    plot_issue_type_counts
+    plot_issue_type_counts,
+    plot_hourly_activity_american_air
 )
 from activity_correlation import plot_activity_correlation
-from plot_poster import plot_american_airlines_sentiment_sankey
+from plot_poster import (
+    plot_american_airlines_sentiment_sankey,
+    plot_sentiment_stacked_bars_by_category_airline
+)
 
 # Configure matplotlib and seaborn for better plots
 plt.style.use('seaborn-v0_8-whitegrid')
@@ -37,9 +41,12 @@ def plot_milestone_2():
     plot_response_time_donut()
     plot_issue_type_counts()
     plot_activity_correlation()
+    plot_hourly_activity_american_air()
     
 def plot_poster():
+    print("Generating: poster")
     plot_american_airlines_sentiment_sankey()
+    plot_sentiment_stacked_bars_by_category_airline()
     
 def plot_issue_type_counts():
     """Bar chart showing counts of different issue types"""

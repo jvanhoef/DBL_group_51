@@ -2,11 +2,11 @@ import pyodbc
 import pandas as pd
 
 
-# start_date = ""
-# end_date = ""
+start_date = ""
+end_date = ""
 
-start_date = '2019-05-22 12:20:00.000'
-end_date = '2019-07-22 12:20:00.000'
+# start_date = '2019-05-22 12:20:00.000'
+# end_date = '2019-07-22 12:20:00.000'
 
 def get_connection():
     server = 'S20203142'
@@ -153,7 +153,6 @@ def get_language_counts(conn):
     query += " GROUP BY language ORDER BY count DESC"
     cursor.execute(query)
     return cursor.fetchall()
-
 
 def get_relevant_tweets(conn, airline_id):
     cursor = conn.cursor()
@@ -320,11 +319,40 @@ def get_activity_correlation(conn, start_date=None, end_date=None):
     df = pd.read_sql(query, conn, params=params)
     return df
 
+def get_hourly_user_airline_activity(conn, airline_id, start_date=None, end_date=None):
+    """
+    Returns two arrays: user_tweet_counts, airline_tweet_counts for each hour (0-23).
+    Optionally filters by tweet.created_at between start_date and end_date.
+    """
+    import pandas as pd
+    query = """
+        SELECT 
+            DATEPART(HOUR, t.created_at) as hour,
+            CASE WHEN t.user_id = ? THEN 1 ELSE 0 END as is_airline
+        FROM tweet t
+        JOIN conversation_tweet ct ON t.id = ct.tweet_id
+        JOIN conversation c ON ct.conversation_id = c.id
+        WHERE c.airline_id = ?
+    """
+    params = [airline_id, airline_id]
+    if start_date and end_date:
+        query += " AND t.created_at BETWEEN ? AND ?"
+        params.extend([start_date, end_date])
+    df = pd.read_sql(query, conn, params=params)
+    hourly = df.groupby(['hour', 'is_airline']).size().unstack(fill_value=0)
+    for col in [0, 1]:
+        if col not in hourly.columns:
+            hourly[col] = 0
+    hourly = hourly.reindex(range(24), fill_value=0)
+    return hourly[0].values, hourly[1].values  # user, airline
+
 #poster getters
-def get_american_air_sentiment_flow(conn):
+def get_american_air_sentiment_flow(conn, start_date=None, end_date=None):
     """
-    Returns a DataFrame with initial and final sentiment for American Airlines conversations.
+    Returns a DataFrame with initial and final sentiment for American Airlines conversations,
+    optionally filtered by tweet.created_at between start_date and end_date.
     """
+    import pandas as pd
     query = """
     SELECT 
         cs.initial_sentiment,
@@ -333,37 +361,65 @@ def get_american_air_sentiment_flow(conn):
     FROM conversation_sentiment cs
     JOIN conversation c ON cs.conversation_id = c.id
     JOIN [user] u ON c.airline_id = u.id
+    JOIN tweet t ON c.root_tweet_id = t.id
     WHERE u.screen_name = 'AmericanAir'
-    AND cs.initial_sentiment IS NOT NULL 
-    AND cs.final_sentiment IS NOT NULL
+      AND cs.initial_sentiment IS NOT NULL 
+      AND cs.final_sentiment IS NOT NULL
     """
-    import pandas as pd
-    df = pd.read_sql(query, conn)
+    params = []
+    if start_date and end_date:
+        query += " AND t.created_at BETWEEN ? AND ?"
+        params.extend([start_date, end_date])
+    df = pd.read_sql(query, conn, params=params)
     return df
 
-def get_conversations_with_tweets_and_sentiment():
-    conn = get_connection()
+def get_airline_sentiment_data(conn, airline_name, start_date=None, end_date=None):
     """
-    Returns a DataFrame with: conversation_id, airline, tweet_id, created_at, sentiment, text, resolution_status
+    Returns a DataFrame with initial and final sentiment for the given airline,
+    optionally filtered by tweet.created_at between start_date and end_date.
     """
+    import pandas as pd
     query = """
-   SELECT
-        c.id AS conversation_id,
-        u.screen_name AS airline,
-        t.id AS tweet_id,
-        t.created_at,
-        t.text,
-        t.sentiment,
-        di.resolved_in_conversation,
-        di.issue_type
-    FROM conversation c
-    JOIN conversation_tweet ct ON c.id = ct.conversation_id
-    JOIN tweet t ON ct.tweet_id = t.id
+    SELECT 
+        cs.initial_sentiment,
+        cs.final_sentiment,
+        u.screen_name as airline_name
+    FROM conversation_sentiment cs
+    JOIN conversation c ON cs.conversation_id = c.id
     JOIN [user] u ON c.airline_id = u.id
-    JOIN detected_issues di ON di.conversation_id = c.id
-    ORDER BY c.id, t.created_at
+    JOIN tweet t ON c.root_tweet_id = t.id
+    WHERE u.screen_name = ?
+      AND cs.initial_sentiment IS NOT NULL 
+      AND cs.final_sentiment IS NOT NULL
     """
-    df = pd.read_sql(query, conn)
+    params = [airline_name]
+    if start_date and end_date:
+        query += " AND t.created_at BETWEEN ? AND ?"
+        params.extend([start_date, end_date])
+    df = pd.read_sql(query, conn, params=params)
+    return df
+
+def fetch_sentiment_by_category_airline(start_date=None, end_date=None):
+    conn = get_connection()
+    query = """
+        SELECT 
+            di.issue_type,
+            cs.sentiment_change,
+            u.screen_name as airline_name,
+            t.created_at
+        FROM detected_issues di
+        JOIN conversation_sentiment cs ON di.conversation_id = cs.conversation_id
+        JOIN conversation c ON di.conversation_id = c.id
+        JOIN [user] u ON c.airline_id = u.id
+        JOIN tweet t ON c.root_tweet_id = t.id
+        WHERE cs.sentiment_change IS NOT NULL
+    """
+    params = []
+    if start_date and end_date:
+        query += " AND t.created_at BETWEEN ? AND ?"
+        params = [start_date, end_date]
+    df = pd.read_sql(query, conn, params=params)
+    conn.close()
     return df
 
 def get_available_categories():
@@ -438,17 +494,6 @@ def get_sentiment_data(issue_type, selected_airlines=None):
     
     return pd.DataFrame(results)
 
-def create_indexes(conn):
-    """Create indexes to speed up queries."""
-    cursor = conn.cursor()
-    try:
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tweet_user_id ON tweet(user_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tweet_in_reply ON tweet(in_reply_to_status_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tweet_created ON tweet(created_at)")
-        conn.commit()
-    except Exception as e:
-        print(f"Error creating indexes: {e}")
-
 #setters
 def insert_conversation(conn, user_id, airline_id, root_tweet_id):
     cursor = conn.cursor()
@@ -469,30 +514,3 @@ def insert_conversation_tweets(conn, conversation_id, tweet_ids):
             VALUES (?, ?)
         """, (conversation_id, tid))
     conn.commit()
-    
-def get_tweet_by_id(conn, tweet_id):
-    """Get a single tweet by ID."""
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM tweet WHERE id = ?", (tweet_id,))
-    columns = [column[0] for column in cursor.description]
-    row = cursor.fetchone()
-    return dict(zip(columns, row)) if row else None
-    
-#Debugging
-def print_conversation_nicely(conversation_id, airline_id):
-    conn = get_connection()
-    df = get_conversation_text_by_id(conn, conversation_id)
-    airline_screen_name = get_screen_name_by_id(conn, airline_id)
-
-    if df.empty:
-        print(f"No conversation found for ID {conversation_id}")
-        return
-
-    print(f"--- Conversation Start ({airline_screen_name}) ---")
-
-    for _, row in df.iterrows():
-        timestamp = int(pd.to_datetime(row["created_at"]).timestamp() * 1000)
-        print(f"(Time: {timestamp}) @{row['screen_name']}: {row['text']}")
-
-    print("--- Conversation End ---")
-    

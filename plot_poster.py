@@ -1,6 +1,9 @@
 import plotly.graph_objects as go
 import os
-from db_repository import get_connection, get_american_air_sentiment_flow
+import matplotlib.pyplot as plt
+import pandas as pd
+from demo_util import save_plot
+from db_repository import get_connection, get_american_air_sentiment_flow, fetch_sentiment_by_category_airline
 
 def categorize_sentiment(score):
     if score < 0:
@@ -106,4 +109,53 @@ def plot_american_airlines_sentiment_sankey():
     fig.write_html(output_path)    
     print("Sankey diagram has been saved as 'american_airlines_sentiment_flow.html'")
 
-plot_american_airlines_sentiment_sankey()
+def plot_sentiment_stacked_bars_by_category_airline(start_date=None, end_date=None):
+    df = fetch_sentiment_by_category_airline(start_date, end_date)
+    airlines = ['AmericanAir', 'lufthansa', 'KLM', 'British_Airways']
+    categories = ['customer_service', 'luggage', 'delay']
+    sentiment_types = ['improved', 'unchanged', 'worsened']
+    colors = ['#2ecc71', '#95a5a6', '#e74c3c']
+
+    os.makedirs("plots", exist_ok=True)
+
+    for category in categories:
+        plt.figure(figsize=(12, 6))
+        cat_df = df[(df['issue_type'] == category) & (df['airline_name'].isin(airlines))]
+        data = []
+        totals = []
+        for airline in airlines:
+            airline_df = cat_df[cat_df['airline_name'] == airline]
+            total = len(airline_df)
+            totals.append(total)
+            if total == 0:
+                data.append([0, 0, 0])
+            else:
+                improved = (airline_df['sentiment_change'] == 'improved').sum() / total * 100
+                unchanged = (airline_df['sentiment_change'] == 'unchanged').sum() / total * 100
+                worsened = (airline_df['sentiment_change'] == 'worsened').sum() / total * 100
+                data.append([improved, unchanged, worsened])
+        data = pd.DataFrame(data, columns=sentiment_types, index=airlines)
+
+        bottom = None
+        for i, sentiment in enumerate(sentiment_types):
+            bars = plt.bar(airlines, data[sentiment], bottom=bottom, color=colors[i], label=sentiment.capitalize())
+            if bottom is None:
+                bottom = data[sentiment]
+            else:
+                bottom += data[sentiment]
+            for j, bar in enumerate(bars):
+                height = bar.get_height()
+                if height > 0:
+                    y = bar.get_y() + height / 2
+                    color = 'white' if sentiment != 'unchanged' else 'black'
+                    plt.text(bar.get_x() + bar.get_width()/2, y, f'{height:.1f}%', ha='center', va='center', color=color, fontsize=9, fontweight='bold')
+        for i, airline in enumerate(airlines):
+            plt.text(i, 102, f'Total: {totals[i]}', ha='center', va='bottom', fontsize=9, fontweight='bold', color='black')
+        plt.ylabel('Percentage of Conversations')
+        plt.title(f'Sentiment Change Distribution by Airline\nCategory: {category}')
+        plt.xticks(rotation=45, ha='right')
+        plt.ylim(0, 110)
+        plt.legend()
+        plt.tight_layout()
+        save_plot(plt, f"sentiment_stacked_bars_{category}")
+        plt.close()

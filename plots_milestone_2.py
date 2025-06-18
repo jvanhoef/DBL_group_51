@@ -1,10 +1,12 @@
 import matplotlib.pyplot as plt
+import numpy as np
 from db_repository import (
     get_connection,
     get_airline_id,
     get_conversation_improvement_counts,
     get_last_user_sentiment_counts,
     get_response_time_buckets,
+    get_hourly_user_airline_activity,
     get_issue_type_count
 )
 from demo_util import save_plot
@@ -104,6 +106,36 @@ def plot_issue_type_counts():
     plt.tight_layout()
     from demo_util import save_plot
     save_plot(fig, "issue_type_counts")
+    
+def plot_hourly_activity_american_air():
+    conn = get_connection()
+    airline_name = "AmericanAir"
+    airline_id = get_airline_id(conn, airline_name)
+    if not airline_id:
+        print(f"Airline '{airline_name}' not found in the database.")
+        conn.close()
+        return
+
+    user_activity, airline_activity = get_hourly_user_airline_activity(conn, airline_id)
+    conn.close()
+
+    hours = np.arange(24)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.scatter(hours, user_activity, s=60, color='royalblue', label='User Activity')
+    ax.scatter(hours, airline_activity, s=60, color='tomato', label='Airline Activity')
+    ax.set_title(f'Hourly Tweet Activity for {airline_name}', fontsize=14)
+    ax.legend()
+    ax.set_xlabel('Hour of the day')
+    ax.set_ylabel('Tweets per hour')
+    ax.set_xticks(hours)
+    ax.set_xlim(-0.5, 23.5)
+    ax.set_ylim(0, max(user_activity.max(), airline_activity.max()) * 1.1 if (user_activity.max() or airline_activity.max()) else 1)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    save_plot(fig, f"hourly_activity_{airline_name}")
+    plt.close(fig)
+    print(f"Hourly activity plot saved as 'plots/hourly_activity_{airline_name}.png'.")
+    
 
 # Call the function to generate and save the plot
-plot_response_time_donut()
+plot_hourly_activity_american_air()
