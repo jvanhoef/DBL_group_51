@@ -21,6 +21,7 @@ from plot_poster import (
     plot_american_airlines_sentiment_sankey,
     plot_sentiment_stacked_bars_by_category_airline
 )
+from ttest_sentiment import main as plot_ttest
 
 # Configure matplotlib and seaborn for better plots
 plt.style.use('seaborn-v0_8-whitegrid')
@@ -37,7 +38,7 @@ def plot_milestone_1():
     
 def plot_milestone_2():
     print("Generating: Milestone 2: Conversation Outcomes")
-    plot_conversation_donuts()
+    # plot_conversation_donuts()
     plot_response_time_donut()
     plot_issue_type_counts()
     plot_activity_correlation()
@@ -47,6 +48,7 @@ def plot_poster():
     print("Generating: poster")
     plot_american_airlines_sentiment_sankey()
     plot_sentiment_stacked_bars_by_category_airline()
+    plot_ttest()
     
 def plot_issue_type_counts():
     """Bar chart showing counts of different issue types"""
@@ -100,21 +102,13 @@ def plot_issue_type_counts():
     # Close the plot to free memory
     plt.close(fig)
 
-# Add more plotting functions here...
-# def plot_another_visualization():
-#     # Your code here...
-#     save_plot(fig, "another_visualization")
-#     plt.close(fig)
-
 def get_all_plotting_functions():
-    """Get all functions in this module that start with 'plot_'"""
-    # Get all functions from this module
+    """Get all functions in this module that start with 'plot_' and are not groupers."""
+    # List of group functions to exclude
+    exclude = {'plot_all', 'plot_poster', 'plot_milestone_1', 'plot_milestone_2'}
     functions = inspect.getmembers(inspect.getmodule(get_all_plotting_functions), inspect.isfunction)
-    
-    # Filter for plot_ functions (excluding this helper function)
     plot_functions = [func for name, func in functions 
-                     if name.startswith('plot_') and name != 'plot_all']
-    
+                      if name.startswith('plot_') and name not in exclude]
     return plot_functions
 
 def main():

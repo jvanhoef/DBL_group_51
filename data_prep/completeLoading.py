@@ -273,33 +273,6 @@ def setup_database_tables():
         )
         """)
         
-        # # Create conversation table for storing conversation metadata
-        # cursor.execute("""
-        # IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'conversation')
-        # CREATE TABLE conversation (
-        #     id INT IDENTITY(1,1) PRIMARY KEY,
-        #     user_id BIGINT NOT NULL,
-        #     airline_id BIGINT NOT NULL,
-        #     root_tweet_id BIGINT NOT NULL,
-        #     created_at DATETIME DEFAULT GETDATE(),
-        #     FOREIGN KEY (user_id) REFERENCES [user](id),
-        #     FOREIGN KEY (airline_id) REFERENCES [user](id),
-        #     FOREIGN KEY (root_tweet_id) REFERENCES tweet(id)
-        # )
-        # """)
-        
-        # # Create conversation_tweet junction table
-        # cursor.execute("""
-        # IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'conversation_tweet')
-        # CREATE TABLE conversation_tweet (
-        #     conversation_id INT NOT NULL,
-        #     tweet_id BIGINT NOT NULL,
-        #     PRIMARY KEY (conversation_id, tweet_id),
-        #     FOREIGN KEY (conversation_id) REFERENCES conversation(id),
-        #     FOREIGN KEY (tweet_id) REFERENCES tweet(id)
-        # )
-        # """)
-        
         connection.commit()
         print("✓ Database tables created successfully")
         log_summary("Database tables created successfully")

@@ -4,33 +4,16 @@ import matplotlib.pyplot as plt
 from scipy.stats import ttest_ind, mannwhitneyu, shapiro
 from scipy import stats
 from statsmodels.stats.power import ttest_power
-from db_repository import get_connection
+from db_repository import get_connection, get_available_airlines, fetch_sentiment_data
+from demo_util import save_plot
 import warnings
 import os
 warnings.filterwarnings('ignore')
 
+
 # Set up plotting style
 plt.style.use('default')
 
-def get_available_airlines():
-    """Get list of airlines available in the database"""
-    conn = get_connection()
-    
-    query = """
-    SELECT DISTINCT u.screen_name as airline_name
-    FROM conversation c
-    JOIN [user] u ON c.airline_id = u.id
-    JOIN conversation_sentiment cs ON c.id = cs.conversation_id
-    JOIN detected_issues di ON c.id = di.conversation_id
-    WHERE cs.initial_sentiment IS NOT NULL 
-      AND cs.final_sentiment IS NOT NULL
-    ORDER BY u.screen_name
-    """
-    
-    df = pd.read_sql(query, conn)
-    conn.close()
-    
-    return df['airline_name'].tolist()
 
 def select_comparison_airline(available_airlines):
     """Let user select which airline to compare with AmericanAir"""
@@ -63,38 +46,6 @@ def select_comparison_airline(available_airlines):
                 print(f"Please enter a number between 1 and {len(comparison_airlines)}")
         except ValueError:
             print("Please enter a valid number")
-
-def fetch_sentiment_data(airline1, airline2):
-    """Fetch sentiment data for two airlines"""
-    conn = get_connection()
-    
-    query = """
-    SELECT 
-        u.screen_name as airline_name,
-        di.issue_type,
-        cs.final_sentiment - cs.initial_sentiment as sentiment_difference,
-        cs.initial_sentiment,
-        cs.final_sentiment,
-        cs.first_response_time_sec,
-        cs.avg_response_time_sec,
-        cs.resolved_to_dm,
-        cs.user_tweets_count,
-        cs.airline_tweets_count,
-        COUNT(*) OVER (PARTITION BY u.screen_name, di.issue_type) as sample_size
-    FROM conversation_sentiment cs
-    JOIN conversation c ON cs.conversation_id = c.id
-    JOIN [user] u ON c.airline_id = u.id
-    JOIN detected_issues di ON cs.conversation_id = di.conversation_id
-    WHERE cs.initial_sentiment IS NOT NULL 
-      AND cs.final_sentiment IS NOT NULL
-      AND u.screen_name IN (?, ?)
-    ORDER BY u.screen_name, di.issue_type
-    """
-    
-    df = pd.read_sql(query, conn, params=(airline1, airline2))
-    conn.close()
-    
-    return df
 
 def analyze_sample_sizes(df):
     """Analyze and display sample sizes for each airline-issue combination"""
@@ -211,12 +162,10 @@ def plot_distributions(data1, data2, airline1, airline2, issue_type, test_name, 
         os.makedirs(folder_name)
     
     # Save the plot
-    filename = f"{folder_name}/histogram_{airline1}_vs_{airline2}_{issue_type.replace(' ', '_')}.png"
-    plt.savefig(filename, dpi=300, bbox_inches='tight')
+    filename = f"histogram_{airline1}_vs_{airline2}_{issue_type.replace(' ', '_')}.png"
+    save_plot(plt, filename )
     print(f"Educational histogram saved as: {filename}")
     
-    plt.show()
-
 def choose_appropriate_test(n1, n2, data1, data2, airline1, airline2, issue_type):
     """Choose the most appropriate test based on sample sizes and normality"""
     

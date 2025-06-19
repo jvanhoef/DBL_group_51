@@ -1,12 +1,11 @@
 import pyodbc
 import pandas as pd
 
+start_date = '2019-12-1 00:00:00.000'
+end_date = '2019-12-31 23:59:59.000'
 
-start_date = ""
-end_date = ""
-
-# start_date = '2019-05-22 12:20:00.000'
-# end_date = '2019-07-22 12:20:00.000'
+# start_date = ''
+# end_date = ''
 
 def get_connection():
     server = 'S20203142'
@@ -432,68 +431,61 @@ def get_available_categories():
     """
     return pd.read_sql(query, conn)['issue_type'].tolist()
 
-def get_available_airlines(issue_type=None):
-    """Get list of airlines with issues of the specified type"""
+def get_available_airlines():
+    """Get list of airlines available in the database"""
+    conn = get_connection()
+    
+    query = """
+    SELECT DISTINCT u.screen_name as airline_name
+    FROM conversation c
+    JOIN [user] u ON c.airline_id = u.id
+    JOIN conversation_sentiment cs ON c.id = cs.conversation_id
+    JOIN detected_issues di ON c.id = di.conversation_id
+    WHERE cs.initial_sentiment IS NOT NULL 
+      AND cs.final_sentiment IS NOT NULL
+    ORDER BY u.screen_name
+    """
+    
+    df = pd.read_sql(query, conn)
+    conn.close()
+    
+    return df['airline_name'].tolist()
+
+def fetch_sentiment_data(airline1, airline2, start_date=None, end_date=None):
+    """Fetch sentiment data for two airlines, with optional date filtering."""
     conn = get_connection()
     query = """
-    SELECT DISTINCT u.screen_name as airline
-    FROM detected_issues di
-    JOIN conversation c ON di.conversation_id = c.id
-    JOIN [user] u ON c.airline_id = u.id
-    WHERE 1=1
-    """ + (f"AND di.issue_type = '{issue_type}'" if issue_type else "") + """
-    ORDER BY u.screen_name;
-    """
-    return pd.read_sql(query, conn)['airline'].tolist()
-
-def get_sentiment_data(issue_type, selected_airlines=None):
-    """Get sentiment data for specified issue type and airlines"""
-    conn = get_connection()
-    
-    airline_filter = ""
-    if selected_airlines:
-        airlines_str = "','".join(selected_airlines)
-        airline_filter = f"AND u.screen_name IN ('{airlines_str}')"
-    
-    query = f"""
     SELECT 
-        u.screen_name as airline,
-        cs.sentiment_change
-    FROM detected_issues di
-    JOIN conversation c ON di.conversation_id = c.id
+        u.screen_name as airline_name,
+        di.issue_type,
+        cs.final_sentiment - cs.initial_sentiment as sentiment_difference,
+        cs.initial_sentiment,
+        cs.final_sentiment,
+        cs.first_response_time_sec,
+        cs.avg_response_time_sec,
+        cs.resolved_to_dm,
+        cs.user_tweets_count,
+        cs.airline_tweets_count,
+        COUNT(*) OVER (PARTITION BY u.screen_name, di.issue_type) as sample_size
+    FROM conversation_sentiment cs
+    JOIN conversation c ON cs.conversation_id = c.id
     JOIN [user] u ON c.airline_id = u.id
-    JOIN conversation_sentiment cs ON di.conversation_id = cs.conversation_id
-    WHERE di.issue_type = '{issue_type}'
-        AND cs.sentiment_change IS NOT NULL
-        {airline_filter}
+    JOIN detected_issues di ON cs.conversation_id = di.conversation_id
+    JOIN tweet t ON c.root_tweet_id = t.id
+    WHERE cs.initial_sentiment IS NOT NULL 
+      AND cs.final_sentiment IS NOT NULL
+      AND u.screen_name IN (?, ?)
     """
-    
-    # Get raw data
-    df = pd.read_sql(query, conn)
-    
-    # Process data for each airline
-    results = []
-    for airline in df['airline'].unique():
-        airline_data = df[df['airline'] == airline]['sentiment_change']        # Count occurrences of each sentiment change category
-        improved = len(airline_data[airline_data == 'improved'])
-        worsened = len(airline_data[airline_data == 'worsened'])  # Using 'declined' from DB
-        unchanged = len(airline_data[airline_data == 'unchanged'])
-        total = improved + unchanged + worsened
-        # Calculate percentages
-        if total > 0:
-            results.append({
-                'airline': airline,
-                'total_issues': total,
-                'improved_count': improved,
-                'worsened_count': worsened,
-                'unchanged_count': unchanged,
-                'improved_pct': (improved/total*100),
-                'worsened_pct': (worsened/total*100),
-                'unchanged_pct': (unchanged/total*100)
-            })
-    
-    return pd.DataFrame(results)
+    params = [airline1, airline2]
+    if start_date and end_date:
+        query += " AND t.created_at BETWEEN ? AND ?"
+        params.extend([start_date, end_date])
+    query += " ORDER BY u.screen_name, di.issue_type"
 
+    df = pd.read_sql(query, conn, params=params)
+    conn.close()
+    return df
+    
 #setters
 def insert_conversation(conn, user_id, airline_id, root_tweet_id):
     cursor = conn.cursor()

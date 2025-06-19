@@ -30,7 +30,7 @@
     Third-party libraries (install with pip): `torch`, `transformers`, `emoji`, `pyodbc`, `pandas`, `tqdm`, `langdetect`, `numpy`, `plotly`
 
 
-- user should create an empty database called airline_tweets
+- user should create an empty database in ssms called airline_tweets, in db_repository the user should change the server name to their own
   
 ---
 
@@ -208,13 +208,10 @@ Run the script to save charts as PNG files in the `plots` folder. Requires a wor
 
 
 # plots_poster
-
-
 Generates the following plots for the poster:
 - Sankey diagram 
 - T-test
 - Stacked bar chart
-
 
 ## Features
 
